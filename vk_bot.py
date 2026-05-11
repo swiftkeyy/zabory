@@ -462,6 +462,13 @@ def admin_back_kb():
     )
 
 
+async def _clear_state(peer_id: int):
+    try:
+        await bot.state_dispenser.delete(peer_id)
+    except KeyError:
+        pass
+
+
 def _parse_positive_float(s: str):
     try:
         v = float(s.replace(",", ".").strip())
@@ -492,7 +499,7 @@ MAIN_TEXT = "🔨 ЗАБОРЫ ПОД КЛЮЧ В ИЖЕВСКЕ\n\nКачест
 # --- Старт ---
 @bot.on.private_message(payload={"command": "start"})
 async def start_payload(message: Message):
-    await bot.state_dispenser.delete(message.peer_id)
+    await _clear_state(message.peer_id)
     conn = _connect()
     cur = conn.cursor()
     user_info = await bot.api.users.get(user_ids=[message.from_id])
@@ -509,7 +516,7 @@ async def start_payload(message: Message):
 
 @bot.on.private_message(text=["начать", "Начать", "/start", "start", "меню", "Меню"])
 async def start_text(message: Message):
-    await bot.state_dispenser.delete(message.peer_id)
+    await _clear_state(message.peer_id)
     conn = _connect()
     cur = conn.cursor()
     user_info = await bot.api.users.get(user_ids=[message.from_id])
@@ -529,7 +536,7 @@ async def start_text(message: Message):
 async def admin_cmd(message: Message):
     if not is_admin(message.from_id):
         return
-    await bot.state_dispenser.delete(message.peer_id)
+    await _clear_state(message.peer_id)
     await message.answer("🛠 Админ-панель", keyboard=admin_menu_kb())
 
 
@@ -558,7 +565,7 @@ async def calc_height_handler(message: Message):
     length = data.get("length", 0)
     prices = get_prices_dict()
     if not prices:
-        await bot.state_dispenser.delete(message.peer_id)
+        await _clear_state(message.peer_id)
         await message.answer(
             "❌ В системе пока не настроены цены. Свяжитесь с менеджером.",
             keyboard=back_main_kb(),
@@ -657,7 +664,7 @@ async def _finalize_lead(peer_id: int, user_id: int, data: dict, comment: str):
     conn.commit()
     conn.close()
 
-    await bot.state_dispenser.delete(peer_id)
+    await _clear_state(peer_id)
     await bot.api.messages.send(
         peer_id=peer_id,
         message=f"✅ Заявка №{lead_id} принята!\n\nМенеджер свяжется с вами в ближайшее время для согласования замера.",
@@ -726,7 +733,7 @@ async def work_caption_handler(message: Message):
 
 async def _save_vk_work(peer_id: int, attachment: str, caption: str):
     if not attachment:
-        await bot.state_dispenser.delete(peer_id)
+        await _clear_state(peer_id)
         await bot.api.messages.send(
             peer_id=peer_id,
             message="❌ Ошибка: фото потерялось. Начните заново.",
@@ -747,7 +754,7 @@ async def _save_vk_work(peer_id: int, attachment: str, caption: str):
         msg = "⚠️ Это фото уже было добавлено."
     finally:
         conn.close()
-    await bot.state_dispenser.delete(peer_id)
+    await _clear_state(peer_id)
     await bot.api.messages.send(peer_id=peer_id, message=msg, keyboard=admin_back_kb(), random_id=0)
 
 
@@ -770,7 +777,7 @@ async def price_edit_handler(message: Message):
     cur.execute("UPDATE prices SET price_per_m2 = ? WHERE fence_type = ?", (new_price, fence_type))
     conn.commit()
     conn.close()
-    await bot.state_dispenser.delete(message.peer_id)
+    await _clear_state(message.peer_id)
     await message.answer(f"✅ Цена обновлена: {fence_type} → {new_price} ₽/м²", keyboard=admin_back_kb())
 
 
@@ -813,7 +820,7 @@ async def type_add_desc_handler(message: Message):
         await message.answer("⚠️ Тип с таким названием уже существует.", keyboard=admin_back_kb())
     finally:
         conn.close()
-    await bot.state_dispenser.delete(message.peer_id)
+    await _clear_state(message.peer_id)
 
 
 # --- Редактирование типа: название ---
@@ -837,7 +844,7 @@ async def type_rename_handler(message: Message):
         await message.answer("⚠️ Такое название уже занято.", keyboard=admin_back_kb())
     finally:
         conn.close()
-    await bot.state_dispenser.delete(message.peer_id)
+    await _clear_state(message.peer_id)
 
 
 # --- Редактирование типа: описание ---
@@ -856,7 +863,7 @@ async def type_redesc_handler(message: Message):
     cur.execute("UPDATE fence_types SET description = ? WHERE id = ?", (desc, tid))
     conn.commit()
     conn.close()
-    await bot.state_dispenser.delete(message.peer_id)
+    await _clear_state(message.peer_id)
     await message.answer("✅ Описание обновлено.", keyboard=admin_back_kb())
 
 
@@ -891,7 +898,7 @@ async def review_text_handler(message: Message):
     )
     conn.commit()
     conn.close()
-    await bot.state_dispenser.delete(message.peer_id)
+    await _clear_state(message.peer_id)
     await message.answer("✅ Отзыв добавлен.", keyboard=admin_back_kb())
 
 
@@ -929,7 +936,7 @@ async def submit_text_handler(message: Message):
     conn.commit()
     conn.close()
 
-    await bot.state_dispenser.delete(message.peer_id)
+    await _clear_state(message.peer_id)
     await message.answer(
         "✅ Спасибо за ваш отзыв!\n\nОн будет опубликован после проверки администратором.",
         keyboard=back_main_kb(),
@@ -990,10 +997,10 @@ async def handle_callback(event: MessageEvent):
     cmd = payload.get("cmd", "")
 
     if cmd == "main":
-        await bot.state_dispenser.delete(event.peer_id)
+        await _clear_state(event.peer_id)
         await event.edit_message(MAIN_TEXT, keyboard=main_menu_kb())
     elif cmd == "cancel":
-        await bot.state_dispenser.delete(event.peer_id)
+        await _clear_state(event.peer_id)
         await event.edit_message(MAIN_TEXT, keyboard=main_menu_kb())
     elif cmd == "calc_start":
         await cmd_calc_start(event)
@@ -1017,11 +1024,11 @@ async def handle_callback(event: MessageEvent):
         await cmd_lead_skip_comment(event)
     elif cmd == "admin_back":
         if is_admin(event.user_id):
-            await bot.state_dispenser.delete(event.peer_id)
+            await _clear_state(event.peer_id)
             await event.edit_message("🛠 Админ-панель", keyboard=admin_menu_kb())
     elif cmd == "admin_close":
         if is_admin(event.user_id):
-            await bot.state_dispenser.delete(event.peer_id)
+            await _clear_state(event.peer_id)
             await event.edit_message("Панель закрыта.")
     elif cmd == "admin_leads":
         await cmd_admin_leads(event, payload)
@@ -1888,7 +1895,7 @@ async def cmd_broadcast_send(event: MessageEvent):
         return
     data = state.payload or {}
     text = data.get("broadcast_text", "")
-    await bot.state_dispenser.delete(event.peer_id)
+    await _clear_state(event.peer_id)
 
     user_ids = get_all_vk_user_ids()
     await event.edit_message(f"Отправляю {len(user_ids)} пользователям…")
