@@ -817,11 +817,25 @@ async def lead_phone(message: Message, state: FSMContext):
     )
 
 
+def _validate_address(address: str) -> str | None:
+    """Return None if address looks plausible, else an error message."""
+    if not (5 <= len(address) <= 300):
+        return "❌ Адрес слишком короткий или слишком длинный."
+    letters = sum(1 for ch in address if ch.isalpha())
+    digits = sum(1 for ch in address if ch.isdigit())
+    if letters < 3:
+        return "❌ В адресе должно быть название улицы (минимум 3 буквы). Пример: <code>Ленина 19</code>"
+    if digits < 1:
+        return "❌ Не вижу номера дома. Укажите его цифрами. Пример: <code>Ленина 19</code>"
+    return None
+
+
 @router.message(LeadStates.address)
 async def lead_address(message: Message, state: FSMContext):
     address = (message.text or "").strip()
-    if len(address) < 3 or len(address) > 300:
-        await message.answer("❌ Адрес слишком короткий или слишком длинный.")
+    err = _validate_address(address)
+    if err:
+        await message.answer(err)
         return
     await state.update_data(address=address)
     await state.set_state(LeadStates.comment)
