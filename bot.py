@@ -2,6 +2,7 @@ import asyncio
 import logging
 import sqlite3
 import os
+import tempfile
 from datetime import datetime
 
 import openpyxl
@@ -12,7 +13,13 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import Message, CallbackQuery, InputMediaPhoto, FSInputFile, InlineKeyboardButton
+from aiogram.types import (
+    Message,
+    CallbackQuery,
+    InputMediaPhoto,
+    FSInputFile,
+    InlineKeyboardButton,
+)
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # ====================== НАСТРОЙКИ ======================
@@ -25,31 +32,81 @@ if not TOKEN:
 ADMINS = [int(x.strip()) for x in ADMINS_STR.split(",") if x.strip()]
 
 PHOTOS_PER_PAGE = 6
+LEADS_PER_PAGE = 5
+REVIEWS_PER_PAGE = 3
+LEAD_STATUSES = ["Новая", "В работе", "Закрыта", "Отказ"]
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-DB_NAME = "fence_bot.db"
+DB_NAME = os.getenv("DB_PATH", "fence_bot.db")
+
 
 # ====================== БАЗА ДАННЫХ ======================
+def _connect():
+    return sqlite3.connect(DB_NAME)
+
+
 def init_db():
-    conn = sqlite3.connect(DB_NAME)
+    conn = _connect()
     cur = conn.cursor()
 
-    cur.execute('''CREATE TABLE IF NOT EXISTS users 
-        (user_id INTEGER PRIMARY KEY, username TEXT, full_name TEXT, created_at TEXT)''')
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            full_name TEXT,
+            created_at TEXT
+        )"""
+    )
 
-    cur.execute('''CREATE TABLE IF NOT EXISTS leads (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER, name TEXT, phone TEXT, address TEXT, comment TEXT,
-        calc_data TEXT, status TEXT DEFAULT 'Новая', created_at TEXT)''')
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS leads (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            name TEXT,
+            phone TEXT,
+            address TEXT,
+            comment TEXT,
+            calc_data TEXT,
+            status TEXT DEFAULT 'Новая',
+            created_at TEXT
+        )"""
+    )
 
-    cur.execute('''CREATE TABLE IF NOT EXISTS works (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, 
-        file_id TEXT UNIQUE, caption TEXT, added_at TEXT)''')
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS works (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_id TEXT UNIQUE,
+            caption TEXT,
+            added_at TEXT
+        )"""
+    )
 
-    cur.execute('''CREATE TABLE IF NOT EXISTS prices (
-        fence_type TEXT PRIMARY KEY, price_per_m2 INTEGER)''')
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS prices (
+            fence_type TEXT PRIMARY KEY,
+            price_per_m2 INTEGER
+        )"""
+    )
+
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS fence_types (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE,
+            description TEXT,
+            created_at TEXT
+        )"""
+    )
+
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS reviews (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            author TEXT,
+            text TEXT,
+            created_at TEXT
+        )"""
+    )
 
     default_prices = {
         "Профнастил": 2500,
@@ -57,27 +114,196 @@ def init_db():
         "3D-сетка": 1800,
         "Рабица": 1200,
         "Дерево": 2800,
-        "Комбинированный": 3500
+        "Комбинированный": 3500,
     }
     for t, p in default_prices.items():
         cur.execute("INSERT OR IGNORE INTO prices VALUES (?, ?)", (t, p))
 
+    default_types = [
+        (
+            "Профнастил",
+            "🔩 <b>Забор из профнастила</b>\n\n"
+            "Самый популярный вариант. Лист профилированной стали с полимерным покрытием на металлических столбах и лагах.\n\n"
+            "• Срок службы: <b>20–30 лет</b>\n"
+            "• Глухой, защищает от пыли и любопытных глаз\n"
+            "• Большой выбор цветов по RAL\n"
+            "• Не требует ухода",
+        ),
+        (
+            "Металлический штакетник",
+            "🪵 <b>Металлический штакетник (евроштакетник)</b>\n\n"
+            "Стальные планки с полимерным покрытием — выглядит как классический деревянный штакетник, но не гниёт и не требует покраски.\n\n"
+            "• Срок службы: <b>25–30 лет</b>\n"
+            "• Полупрозрачный или глухой монтаж\n"
+            "• Аккуратный современный вид\n"
+            "• Хорошо продувается ветром",
+        ),
+        (
+            "3D-сетка",
+            "🔳 <b>3D-сетка (сварные панели)</b>\n\n"
+            "Жёсткие сварные панели из прутка с полимерным покрытием. Часто ставят на дачах и придомовых территориях.\n\n"
+            "• Срок службы: <b>15–25 лет</b>\n"
+            "• Не парусит, выдерживает ветровые нагрузки\n"
+            "• Быстрый монтаж\n"
+            "• Пропускает свет на участок",
+        ),
+        (
+            "Рабица",
+            "🕸 <b>Забор из сетки-рабицы</b>\n\n"
+            "Бюджетное решение для дачи, садового участка или зонирования территории.\n\n"
+            "• Срок службы: <b>10–15 лет</b>\n"
+            "• Самый доступный вариант\n"
+            "• Пропускает свет\n"
+            "• Можно с оцинковкой или ПВХ-покрытием",
+        ),
+        (
+            "Дерево",
+            "🌲 <b>Деревянный забор</b>\n\n"
+            "Классика и натуральный вид. Доска или штакетник из обработанной древесины.\n\n"
+            "• Срок службы: <b>10–20 лет</b> (с обработкой)\n"
+            "• Тёплый, «домашний» внешний вид\n"
+            "• Возможна покраска в любой цвет\n"
+            "• Требует периодического обновления покрытия",
+        ),
+        (
+            "Комбинированный",
+            "🧱 <b>Комбинированный забор</b>\n\n"
+            "Сочетание кирпичных/каменных столбов с пролётами из профнастила, штакетника или ковки. Премиум-вариант.\n\n"
+            "• Срок службы: <b>40+ лет</b>\n"
+            "• Самый презентабельный вид\n"
+            "• Высокая прочность и шумоизоляция\n"
+            "• Подходит для частных домов",
+        ),
+    ]
+    now = datetime.now().isoformat()
+    for name, desc in default_types:
+        cur.execute(
+            "INSERT OR IGNORE INTO fence_types (name, description, created_at) VALUES (?, ?, ?)",
+            (name, desc, now),
+        )
+
+    cur.execute("SELECT COUNT(*) FROM reviews")
+    if cur.fetchone()[0] == 0:
+        default_reviews = [
+            (
+                "Алексей, Ижевск",
+                "Ставили забор из профнастила вокруг участка 12 соток. Замерщик приехал на следующий день, всё посчитали без скрытых платежей. Бригада отработала за 2 дня — аккуратно, ровно, столбы строго по уровню. Спасибо!",
+            ),
+            (
+                "Марина, пос. Воткинский",
+                "Заказывали евроштакетник графитового цвета. Очень довольны, выглядит как на картинке. Ребята вежливые, всё убрали за собой.",
+            ),
+            (
+                "Сергей, Завьялово",
+                "Делали комбинированный забор: кирпичные столбы + профнастил. Цена честная, по итогу как договаривались. Соседи уже спрашивали контакты.",
+            ),
+        ]
+        for author, text in default_reviews:
+            cur.execute(
+                "INSERT INTO reviews (author, text, created_at) VALUES (?, ?, ?)",
+                (author, text, now),
+            )
+
     conn.commit()
     conn.close()
 
+
 def get_prices_dict():
-    conn = sqlite3.connect(DB_NAME)
+    conn = _connect()
     cur = conn.cursor()
-    cur.execute("SELECT fence_type, price_per_m2 FROM prices")
+    cur.execute("SELECT fence_type, price_per_m2 FROM prices ORDER BY fence_type")
     prices = dict(cur.fetchall())
     conn.close()
     return prices
+
+
+def get_fence_types():
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("SELECT id, name, description FROM fence_types ORDER BY id")
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_fence_type(type_id: int):
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("SELECT id, name, description FROM fence_types WHERE id = ?", (type_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def get_reviews(offset: int, limit: int):
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM reviews")
+    total = cur.fetchone()[0]
+    cur.execute(
+        "SELECT id, author, text FROM reviews ORDER BY id DESC LIMIT ? OFFSET ?",
+        (limit, offset),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows, total
+
+
+def get_works(offset: int, limit: int):
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM works")
+    total = cur.fetchone()[0]
+    cur.execute(
+        "SELECT id, file_id, caption FROM works ORDER BY id DESC LIMIT ? OFFSET ?",
+        (limit, offset),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows, total
+
+
+def get_leads(offset: int, limit: int):
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM leads")
+    total = cur.fetchone()[0]
+    cur.execute(
+        "SELECT id, name, phone, status, created_at FROM leads ORDER BY id DESC LIMIT ? OFFSET ?",
+        (limit, offset),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows, total
+
+
+def get_lead(lead_id: int):
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, user_id, name, phone, address, comment, calc_data, status, created_at "
+        "FROM leads WHERE id = ?",
+        (lead_id,),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def get_all_user_ids():
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("SELECT user_id FROM users")
+    rows = [r[0] for r in cur.fetchall()]
+    conn.close()
+    return rows
+
 
 # ====================== FSM ======================
 class CalculatorStates(StatesGroup):
     length = State()
     height = State()
-    fence_type = State()
+
 
 class LeadStates(StatesGroup):
     name = State()
@@ -85,28 +311,70 @@ class LeadStates(StatesGroup):
     address = State()
     comment = State()
 
+
 class AddWorkStates(StatesGroup):
     photo = State()
     caption = State()
 
+
 class EditPriceStates(StatesGroup):
     waiting_price = State()
 
-# ====================== КЛАВИАТУРЫ ======================
+
+class AddTypeStates(StatesGroup):
+    name = State()
+    description = State()
+
+
+class EditTypeStates(StatesGroup):
+    waiting_name = State()
+    waiting_description = State()
+
+
+class AddReviewStates(StatesGroup):
+    author = State()
+    text = State()
+
+
+class BroadcastStates(StatesGroup):
+    waiting_text = State()
+    confirm = State()
+
+
+# ====================== ХЕЛПЕРЫ ======================
+def is_admin(user_id: int) -> bool:
+    return user_id in ADMINS
+
+
 def main_menu():
     b = InlineKeyboardBuilder()
     b.row(InlineKeyboardButton(text="🧮 Рассчитать стоимость", callback_data="calc_start"))
-    b.row(InlineKeyboardButton(text="📸 Наши работы", callback_data="works"))
+    b.row(InlineKeyboardButton(text="📸 Наши работы", callback_data="works_1"))
     b.row(InlineKeyboardButton(text="🏗 Виды заборов", callback_data="types"))
     b.row(InlineKeyboardButton(text="💰 Цены", callback_data="prices"))
-    b.row(InlineKeyboardButton(text="⭐ Отзывы", callback_data="reviews"))
+    b.row(InlineKeyboardButton(text="⭐ Отзывы", callback_data="reviews_1"))
     b.row(InlineKeyboardButton(text="📍 Заказать замер", callback_data="lead_start"))
     return b.as_markup()
+
+
+def back_main_kb():
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_main"))
+    return b.as_markup()
+
+
+def cancel_kb():
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="❌ Отмена", callback_data="back_main"))
+    return b.as_markup()
+
 
 def admin_menu():
     b = InlineKeyboardBuilder()
     b.row(InlineKeyboardButton(text="📋 Все заявки", callback_data="admin_leads_1"))
     b.row(InlineKeyboardButton(text="📸 Управление работами", callback_data="admin_works"))
+    b.row(InlineKeyboardButton(text="🏗 Управление видами заборов", callback_data="admin_types"))
+    b.row(InlineKeyboardButton(text="⭐ Управление отзывами", callback_data="admin_reviews"))
     b.row(InlineKeyboardButton(text="💰 Управление ценами", callback_data="admin_prices"))
     b.row(InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats"))
     b.row(InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast"))
@@ -114,75 +382,1282 @@ def admin_menu():
     b.row(InlineKeyboardButton(text="❌ Закрыть", callback_data="admin_close"))
     return b.as_markup()
 
+
+def admin_back_kb():
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="🔙 В админку", callback_data="admin_back"))
+    return b.as_markup()
+
+
+async def safe_edit(call: CallbackQuery, text: str, reply_markup=None):
+    """edit_text если можем, иначе отправляем новое сообщение."""
+    try:
+        await call.message.edit_text(text, reply_markup=reply_markup)
+    except Exception:
+        await call.message.answer(text, reply_markup=reply_markup)
+
+
 # ====================== РОУТЕР ======================
 router = Router()
 
+
 # ====================== СТАРТ ======================
 @router.message(CommandStart())
-async def start(message: Message):
-    conn = sqlite3.connect(DB_NAME)
+async def start(message: Message, state: FSMContext):
+    await state.clear()
+    conn = _connect()
     cur = conn.cursor()
-    cur.execute("INSERT OR IGNORE INTO users VALUES (?,?,?,?)",
-                (message.from_user.id, message.from_user.username, message.from_user.full_name, datetime.now().isoformat()))
+    cur.execute(
+        "INSERT OR IGNORE INTO users VALUES (?,?,?,?)",
+        (
+            message.from_user.id,
+            message.from_user.username,
+            message.from_user.full_name,
+            datetime.now().isoformat(),
+        ),
+    )
     conn.commit()
     conn.close()
 
     await message.answer(
         "🔨 <b>Заборы под ключ в Ижевске</b>\n\n"
         "Качественно • Быстро • С гарантией\nБесплатный выезд замерщика",
-        parse_mode=ParseMode.HTML,
-        reply_markup=main_menu()
+        reply_markup=main_menu(),
     )
 
-@router.message(Command("admin"))
-async def admin_panel(message: Message):
-    if message.from_user.id not in ADMINS:
-        return
-    await message.answer("🛠 <b>Админ-панель</b>", parse_mode=ParseMode.HTML, reply_markup=admin_menu())
 
-# ====================== УПРАВЛЕНИЕ ЦЕНАМИ ======================
+@router.message(Command("cancel"))
+async def cancel_cmd(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Отменено.", reply_markup=main_menu())
+
+
+@router.message(Command("admin"))
+async def admin_panel(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    await state.clear()
+    await message.answer("🛠 <b>Админ-панель</b>", reply_markup=admin_menu())
+
+
+@router.callback_query(F.data == "back_main")
+async def back_main(call: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await safe_edit(
+        call,
+        "🔨 <b>Заборы под ключ в Ижевске</b>\n\n"
+        "Качественно • Быстро • С гарантией\nБесплатный выезд замерщика",
+        reply_markup=main_menu(),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "admin_back")
+async def admin_back(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        await call.answer()
+        return
+    await state.clear()
+    await safe_edit(call, "🛠 <b>Админ-панель</b>", reply_markup=admin_menu())
+    await call.answer()
+
+
+@router.callback_query(F.data == "admin_close")
+async def admin_close(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        await call.answer()
+        return
+    await state.clear()
+    try:
+        await call.message.delete()
+    except Exception:
+        pass
+    await call.answer()
+
+
+# ====================== КАЛЬКУЛЯТОР ======================
+@router.callback_query(F.data == "calc_start")
+async def calc_start(call: CallbackQuery, state: FSMContext):
+    await state.set_state(CalculatorStates.length)
+    await safe_edit(
+        call,
+        "🧮 <b>Калькулятор стоимости</b>\n\nВведите длину забора в метрах (например, <code>25</code> или <code>25.5</code>):",
+        reply_markup=cancel_kb(),
+    )
+    await call.answer()
+
+
+def _parse_positive_float(s: str):
+    try:
+        v = float(s.replace(",", ".").strip())
+    except (ValueError, AttributeError):
+        return None
+    if v <= 0 or v > 10000:
+        return None
+    return v
+
+
+@router.message(CalculatorStates.length)
+async def calc_length(message: Message, state: FSMContext):
+    v = _parse_positive_float(message.text)
+    if v is None:
+        await message.answer("❌ Введите положительное число (метры). Пример: <code>25</code>")
+        return
+    await state.update_data(length=v)
+    await state.set_state(CalculatorStates.height)
+    await message.answer(
+        f"Длина: <b>{v} м</b>\n\nТеперь введите высоту забора в метрах (обычно 1.5–2.5):",
+        reply_markup=cancel_kb(),
+    )
+
+
+@router.message(CalculatorStates.height)
+async def calc_height(message: Message, state: FSMContext):
+    v = _parse_positive_float(message.text)
+    if v is None or v > 10:
+        await message.answer("❌ Введите положительное число (метры). Пример: <code>2</code>")
+        return
+    await state.update_data(height=v)
+
+    prices = get_prices_dict()
+    if not prices:
+        await message.answer("❌ В системе пока не настроены цены. Свяжитесь с менеджером.", reply_markup=back_main_kb())
+        await state.clear()
+        return
+
+    types_list = list(prices.keys())
+    await state.update_data(price_types=types_list)
+
+    b = InlineKeyboardBuilder()
+    for idx, t in enumerate(types_list):
+        b.row(InlineKeyboardButton(text=f"{t} — {prices[t]} ₽/м²", callback_data=f"calc_t_{idx}"))
+    b.row(InlineKeyboardButton(text="❌ Отмена", callback_data="back_main"))
+
+    await message.answer(
+        f"Высота: <b>{v} м</b>\n\nВыберите материал забора:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data.startswith("calc_t_"), CalculatorStates.height)
+async def calc_pick_type(call: CallbackQuery, state: FSMContext):
+    try:
+        idx = int(call.data.split("_")[-1])
+    except ValueError:
+        await call.answer()
+        return
+    data = await state.get_data()
+    types_list = data.get("price_types") or []
+    if idx < 0 or idx >= len(types_list):
+        await call.answer("Тип не найден", show_alert=True)
+        return
+
+    fence_type = types_list[idx]
+    length = data["length"]
+    height = data["height"]
+    prices = get_prices_dict()
+    price_per_m2 = prices.get(fence_type, 0)
+    area = length * height
+    total = int(round(area * price_per_m2))
+
+    calc_data = f"{fence_type}, {length}×{height} м ({area:.1f} м²) — {total} ₽"
+    await state.update_data(calc_data=calc_data)
+
+    text = (
+        "🧮 <b>Расчёт стоимости</b>\n\n"
+        f"• Материал: <b>{fence_type}</b>\n"
+        f"• Размеры: <b>{length} × {height} м</b>\n"
+        f"• Площадь: <b>{area:.1f} м²</b>\n"
+        f"• Цена за м²: <b>{price_per_m2} ₽</b>\n\n"
+        f"💰 <b>Итого: ~{total:,} ₽</b>\n\n".replace(",", " ")
+        + "⚠️ Это предварительный расчёт. Финальная стоимость определяется на бесплатном замере "
+        "(учитываются рельеф, ворота, калитка, доставка)."
+    )
+
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="📍 Заказать бесплатный замер", callback_data="lead_start"))
+    b.row(InlineKeyboardButton(text="🧮 Пересчитать", callback_data="calc_start"))
+    b.row(InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_main"))
+
+    await safe_edit(call, text, reply_markup=b.as_markup())
+    await call.answer()
+
+
+# ====================== НАШИ РАБОТЫ ======================
+@router.callback_query(F.data.startswith("works_"))
+async def works_page(call: CallbackQuery):
+    try:
+        page = max(1, int(call.data.split("_")[1]))
+    except (ValueError, IndexError):
+        page = 1
+    offset = (page - 1) * PHOTOS_PER_PAGE
+    rows, total = get_works(offset, PHOTOS_PER_PAGE)
+
+    if total == 0:
+        await safe_edit(
+            call,
+            "📸 <b>Наши работы</b>\n\nПока нет загруженных фотографий. Скоро здесь появится наша галерея!",
+            reply_markup=back_main_kb(),
+        )
+        await call.answer()
+        return
+
+    total_pages = (total + PHOTOS_PER_PAGE - 1) // PHOTOS_PER_PAGE
+    page = min(page, total_pages)
+
+    try:
+        await call.message.delete()
+    except Exception:
+        pass
+
+    media = []
+    for i, (_id, file_id, caption) in enumerate(rows):
+        if i == 0:
+            cap = f"📸 <b>Наши работы</b> — стр. {page}/{total_pages}\n\n{caption or ''}".strip()
+            media.append(InputMediaPhoto(media=file_id, caption=cap, parse_mode=ParseMode.HTML))
+        else:
+            media.append(InputMediaPhoto(media=file_id, caption=caption or None))
+
+    try:
+        await call.bot.send_media_group(call.message.chat.id, media=media)
+    except Exception as e:
+        logger.exception("send_media_group failed: %s", e)
+        await call.bot.send_message(
+            call.message.chat.id,
+            "❌ Не удалось загрузить фотографии. Попробуйте позже.",
+            reply_markup=back_main_kb(),
+        )
+        await call.answer()
+        return
+
+    b = InlineKeyboardBuilder()
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"works_{page - 1}"))
+    if page < total_pages:
+        nav.append(InlineKeyboardButton(text="Вперёд ▶️", callback_data=f"works_{page + 1}"))
+    if nav:
+        b.row(*nav)
+    b.row(InlineKeyboardButton(text="📍 Заказать замер", callback_data="lead_start"))
+    b.row(InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_main"))
+
+    await call.bot.send_message(
+        call.message.chat.id,
+        f"Страница <b>{page}</b> из <b>{total_pages}</b>",
+        reply_markup=b.as_markup(),
+    )
+    await call.answer()
+
+
+# ====================== ВИДЫ ЗАБОРОВ ======================
+@router.callback_query(F.data == "types")
+async def types_list(call: CallbackQuery):
+    types = get_fence_types()
+    if not types:
+        await safe_edit(
+            call,
+            "🏗 <b>Виды заборов</b>\n\nПока не добавлено ни одного типа. Загляните позже.",
+            reply_markup=back_main_kb(),
+        )
+        await call.answer()
+        return
+
+    b = InlineKeyboardBuilder()
+    for tid, name, _desc in types:
+        b.row(InlineKeyboardButton(text=name, callback_data=f"ftype_{tid}"))
+    b.row(InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_main"))
+
+    await safe_edit(
+        call,
+        "🏗 <b>Виды заборов</b>\n\nВыберите тип, чтобы посмотреть подробности:",
+        reply_markup=b.as_markup(),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("ftype_"))
+async def type_detail(call: CallbackQuery):
+    try:
+        tid = int(call.data.split("_")[1])
+    except (ValueError, IndexError):
+        await call.answer()
+        return
+    row = get_fence_type(tid)
+    if not row:
+        await call.answer("Тип не найден", show_alert=True)
+        return
+    _id, name, description = row
+    prices = get_prices_dict()
+    price = prices.get(name)
+    text = description or f"<b>{name}</b>"
+    if price:
+        text += f"\n\n💰 Цена: <b>{price} ₽/м²</b>"
+
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="🧮 Рассчитать стоимость", callback_data="calc_start"))
+    b.row(InlineKeyboardButton(text="📍 Заказать замер", callback_data="lead_start"))
+    b.row(InlineKeyboardButton(text="🔙 К видам заборов", callback_data="types"))
+    b.row(InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_main"))
+
+    await safe_edit(call, text, reply_markup=b.as_markup())
+    await call.answer()
+
+
+# ====================== ЦЕНЫ ======================
+@router.callback_query(F.data == "prices")
+async def prices_view(call: CallbackQuery):
+    prices = get_prices_dict()
+    if not prices:
+        await safe_edit(
+            call,
+            "💰 <b>Цены</b>\n\nЦены пока не настроены. Напишите менеджеру.",
+            reply_markup=back_main_kb(),
+        )
+        await call.answer()
+        return
+    lines = ["💰 <b>Прайс-лист (руб/м²)</b>\n"]
+    for t, p in prices.items():
+        lines.append(f"• {t}: <b>{p} ₽</b>")
+    lines.append("\nЦены ориентировочные. Финальная стоимость — после бесплатного замера.")
+
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="🧮 Рассчитать стоимость", callback_data="calc_start"))
+    b.row(InlineKeyboardButton(text="📍 Заказать замер", callback_data="lead_start"))
+    b.row(InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_main"))
+
+    await safe_edit(call, "\n".join(lines), reply_markup=b.as_markup())
+    await call.answer()
+
+
+# ====================== ОТЗЫВЫ ======================
+@router.callback_query(F.data.startswith("reviews_"))
+async def reviews_page(call: CallbackQuery):
+    try:
+        page = max(1, int(call.data.split("_")[1]))
+    except (ValueError, IndexError):
+        page = 1
+    offset = (page - 1) * REVIEWS_PER_PAGE
+    rows, total = get_reviews(offset, REVIEWS_PER_PAGE)
+
+    if total == 0:
+        await safe_edit(
+            call,
+            "⭐ <b>Отзывы</b>\n\nПока нет отзывов. Будьте первым — закажите замер!",
+            reply_markup=back_main_kb(),
+        )
+        await call.answer()
+        return
+
+    total_pages = (total + REVIEWS_PER_PAGE - 1) // REVIEWS_PER_PAGE
+    page = min(page, total_pages)
+
+    parts = [f"⭐ <b>Отзывы</b> — стр. {page}/{total_pages}\n"]
+    for _id, author, text in rows:
+        parts.append(f"<b>{author}</b>\n{text}\n")
+
+    b = InlineKeyboardBuilder()
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"reviews_{page - 1}"))
+    if page < total_pages:
+        nav.append(InlineKeyboardButton(text="Вперёд ▶️", callback_data=f"reviews_{page + 1}"))
+    if nav:
+        b.row(*nav)
+    b.row(InlineKeyboardButton(text="📍 Заказать замер", callback_data="lead_start"))
+    b.row(InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_main"))
+
+    await safe_edit(call, "\n".join(parts), reply_markup=b.as_markup())
+    await call.answer()
+
+
+# ====================== ЗАЯВКА НА ЗАМЕР ======================
+@router.callback_query(F.data == "lead_start")
+async def lead_start(call: CallbackQuery, state: FSMContext):
+    # Сохраняем расчёт из калькулятора, если он есть
+    data = await state.get_data()
+    calc_data = data.get("calc_data")
+    await state.clear()
+    if calc_data:
+        await state.update_data(calc_data=calc_data)
+    await state.set_state(LeadStates.name)
+    await safe_edit(
+        call,
+        "📍 <b>Заявка на бесплатный замер</b>\n\nКак вас зовут?",
+        reply_markup=cancel_kb(),
+    )
+    await call.answer()
+
+
+@router.message(LeadStates.name)
+async def lead_name(message: Message, state: FSMContext):
+    name = (message.text or "").strip()
+    if len(name) < 2 or len(name) > 100:
+        await message.answer("❌ Имя должно быть от 2 до 100 символов.")
+        return
+    await state.update_data(name=name)
+    await state.set_state(LeadStates.phone)
+    await message.answer(
+        f"Приятно познакомиться, <b>{name}</b>!\n\nВведите ваш номер телефона:",
+        reply_markup=cancel_kb(),
+    )
+
+
+@router.message(LeadStates.phone)
+async def lead_phone(message: Message, state: FSMContext):
+    phone = (message.text or "").strip()
+    digits = "".join(ch for ch in phone if ch.isdigit())
+    if len(digits) < 10 or len(digits) > 15:
+        await message.answer("❌ Введите корректный номер (минимум 10 цифр).")
+        return
+    await state.update_data(phone=phone)
+    await state.set_state(LeadStates.address)
+    await message.answer(
+        "📍 Укажите адрес объекта (город, улица, дом):",
+        reply_markup=cancel_kb(),
+    )
+
+
+@router.message(LeadStates.address)
+async def lead_address(message: Message, state: FSMContext):
+    address = (message.text or "").strip()
+    if len(address) < 3 or len(address) > 300:
+        await message.answer("❌ Адрес слишком короткий или слишком длинный.")
+        return
+    await state.update_data(address=address)
+    await state.set_state(LeadStates.comment)
+
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="➡️ Пропустить", callback_data="lead_skip_comment"))
+    b.row(InlineKeyboardButton(text="❌ Отмена", callback_data="back_main"))
+
+    await message.answer(
+        "💬 Добавьте комментарий (длина забора, удобное время для звонка, особенности участка) — или пропустите:",
+        reply_markup=b.as_markup(),
+    )
+
+
+async def _finalize_lead(bot: Bot, user_id: int, username: str | None, full_name: str | None, state: FSMContext) -> int:
+    data = await state.get_data()
+    name = data.get("name", "")
+    phone = data.get("phone", "")
+    address = data.get("address", "")
+    comment = data.get("comment", "")
+    calc_data = data.get("calc_data", "")
+
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO leads (user_id, name, phone, address, comment, calc_data, status, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, 'Новая', ?)",
+        (user_id, name, phone, address, comment, calc_data, datetime.now().isoformat()),
+    )
+    lead_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+
+    contact = f"@{username}" if username else (full_name or f"id{user_id}")
+    admin_text = (
+        "🔥 <b>Новая заявка!</b>\n\n"
+        f"<b>№</b> {lead_id}\n"
+        f"<b>Имя:</b> {name}\n"
+        f"<b>Телефон:</b> {phone}\n"
+        f"<b>Адрес:</b> {address}\n"
+        f"<b>Комментарий:</b> {comment or '—'}\n"
+        f"<b>Расчёт:</b> {calc_data or '—'}\n"
+        f"<b>Клиент:</b> {contact} (id <code>{user_id}</code>)"
+    )
+    for admin_id in ADMINS:
+        try:
+            await bot.send_message(admin_id, admin_text)
+        except Exception as e:
+            logger.warning("Failed to notify admin %s: %s", admin_id, e)
+
+    await state.clear()
+    return lead_id
+
+
+@router.message(LeadStates.comment)
+async def lead_comment(message: Message, state: FSMContext):
+    comment = (message.text or "").strip()
+    if len(comment) > 1000:
+        await message.answer("❌ Слишком длинный комментарий (макс 1000 символов).")
+        return
+    await state.update_data(comment=comment)
+    lead_id = await _finalize_lead(
+        message.bot,
+        message.from_user.id,
+        message.from_user.username,
+        message.from_user.full_name,
+        state,
+    )
+    await message.answer(
+        f"✅ <b>Заявка №{lead_id} принята!</b>\n\nМенеджер свяжется с вами в ближайшее время для согласования замера.",
+        reply_markup=back_main_kb(),
+    )
+
+
+@router.callback_query(F.data == "lead_skip_comment", LeadStates.comment)
+async def lead_skip_comment(call: CallbackQuery, state: FSMContext):
+    await state.update_data(comment="")
+    lead_id = await _finalize_lead(
+        call.bot,
+        call.from_user.id,
+        call.from_user.username,
+        call.from_user.full_name,
+        state,
+    )
+    await safe_edit(
+        call,
+        f"✅ <b>Заявка №{lead_id} принята!</b>\n\nМенеджер свяжется с вами в ближайшее время для согласования замера.",
+        reply_markup=back_main_kb(),
+    )
+    await call.answer()
+
+
+# ====================== АДМИН: ЗАЯВКИ ======================
+@router.callback_query(F.data.startswith("admin_leads_"))
+async def admin_leads(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        await call.answer()
+        return
+    await state.clear()
+    try:
+        page = max(1, int(call.data.split("_")[-1]))
+    except ValueError:
+        page = 1
+    offset = (page - 1) * LEADS_PER_PAGE
+    rows, total = get_leads(offset, LEADS_PER_PAGE)
+
+    if total == 0:
+        await safe_edit(call, "📋 Заявок пока нет.", reply_markup=admin_back_kb())
+        await call.answer()
+        return
+
+    total_pages = (total + LEADS_PER_PAGE - 1) // LEADS_PER_PAGE
+    page = min(page, total_pages)
+
+    lines = [f"📋 <b>Заявки</b> — стр. {page}/{total_pages} (всего: {total})\n"]
+    b = InlineKeyboardBuilder()
+    for lid, name, phone, status, created_at in rows:
+        date_str = created_at[:16].replace("T", " ") if created_at else ""
+        lines.append(f"#{lid} • {name} • {phone} • <b>{status}</b> • {date_str}")
+        b.row(InlineKeyboardButton(text=f"#{lid} {name}", callback_data=f"lead_view_{lid}"))
+
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton(text="◀️", callback_data=f"admin_leads_{page - 1}"))
+    if page < total_pages:
+        nav.append(InlineKeyboardButton(text="▶️", callback_data=f"admin_leads_{page + 1}"))
+    if nav:
+        b.row(*nav)
+    b.row(InlineKeyboardButton(text="🔙 В админку", callback_data="admin_back"))
+
+    await safe_edit(call, "\n".join(lines), reply_markup=b.as_markup())
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("lead_view_"))
+async def lead_view(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer()
+        return
+    try:
+        lid = int(call.data.split("_")[-1])
+    except ValueError:
+        await call.answer()
+        return
+    row = get_lead(lid)
+    if not row:
+        await call.answer("Заявка не найдена", show_alert=True)
+        return
+    _id, user_id, name, phone, address, comment, calc_data, status, created_at = row
+    text = (
+        f"📋 <b>Заявка №{_id}</b>\n\n"
+        f"<b>Статус:</b> {status}\n"
+        f"<b>Имя:</b> {name}\n"
+        f"<b>Телефон:</b> {phone}\n"
+        f"<b>Адрес:</b> {address}\n"
+        f"<b>Комментарий:</b> {comment or '—'}\n"
+        f"<b>Расчёт:</b> {calc_data or '—'}\n"
+        f"<b>Клиент tg id:</b> <code>{user_id}</code>\n"
+        f"<b>Создана:</b> {created_at[:16].replace('T', ' ') if created_at else ''}"
+    )
+    b = InlineKeyboardBuilder()
+    for s in LEAD_STATUSES:
+        if s != status:
+            b.row(InlineKeyboardButton(text=f"→ {s}", callback_data=f"lead_status_{_id}_{LEAD_STATUSES.index(s)}"))
+    b.row(InlineKeyboardButton(text="🔙 К заявкам", callback_data="admin_leads_1"))
+    b.row(InlineKeyboardButton(text="🛠 В админку", callback_data="admin_back"))
+    await safe_edit(call, text, reply_markup=b.as_markup())
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("lead_status_"))
+async def lead_status(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer()
+        return
+    parts = call.data.split("_")
+    try:
+        lid = int(parts[2])
+        sidx = int(parts[3])
+    except (ValueError, IndexError):
+        await call.answer()
+        return
+    if sidx < 0 or sidx >= len(LEAD_STATUSES):
+        await call.answer()
+        return
+    new_status = LEAD_STATUSES[sidx]
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("UPDATE leads SET status = ? WHERE id = ?", (new_status, lid))
+    conn.commit()
+    conn.close()
+    await call.answer(f"Статус → {new_status}")
+    await lead_view(call.model_copy(update={"data": f"lead_view_{lid}"}))
+
+
+# ====================== АДМИН: РАБОТЫ ======================
+@router.callback_query(F.data == "admin_works")
+async def admin_works(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        await call.answer()
+        return
+    await state.clear()
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM works")
+    total = cur.fetchone()[0]
+    conn.close()
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="➕ Добавить фото", callback_data="work_add"))
+    b.row(InlineKeyboardButton(text=f"📋 Список фото ({total})", callback_data="work_list_1"))
+    b.row(InlineKeyboardButton(text="🔙 В админку", callback_data="admin_back"))
+    await safe_edit(call, f"📸 <b>Управление работами</b>\n\nВсего фото: <b>{total}</b>", reply_markup=b.as_markup())
+    await call.answer()
+
+
+@router.callback_query(F.data == "work_add")
+async def work_add(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        await call.answer()
+        return
+    await state.set_state(AddWorkStates.photo)
+    await safe_edit(call, "📸 Пришлите фото для добавления в галерею:", reply_markup=admin_back_kb())
+    await call.answer()
+
+
+@router.message(AddWorkStates.photo, F.photo)
+async def work_add_photo(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    file_id = message.photo[-1].file_id
+    await state.update_data(file_id=file_id)
+    await state.set_state(AddWorkStates.caption)
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="➡️ Без подписи", callback_data="work_skip_caption"))
+    b.row(InlineKeyboardButton(text="❌ Отмена", callback_data="admin_back"))
+    await message.answer("Введите подпись к фото (или пропустите):", reply_markup=b.as_markup())
+
+
+@router.message(AddWorkStates.photo)
+async def work_add_photo_invalid(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    await message.answer("❌ Это не фото. Пришлите изображение.")
+
+
+async def _save_work(bot: Bot, chat_id: int, state: FSMContext, caption: str):
+    data = await state.get_data()
+    file_id = data.get("file_id")
+    if not file_id:
+        await state.clear()
+        await bot.send_message(chat_id, "❌ Ошибка: фото потерялось. Начните заново.", reply_markup=admin_back_kb())
+        return
+    conn = _connect()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "INSERT INTO works (file_id, caption, added_at) VALUES (?, ?, ?)",
+            (file_id, caption, datetime.now().isoformat()),
+        )
+        conn.commit()
+        msg = "✅ Фото добавлено в галерею."
+    except sqlite3.IntegrityError:
+        msg = "⚠️ Это фото уже было добавлено."
+    finally:
+        conn.close()
+    await state.clear()
+    await bot.send_message(chat_id, msg, reply_markup=admin_back_kb())
+
+
+@router.message(AddWorkStates.caption)
+async def work_caption(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    await _save_work(message.bot, message.chat.id, state, (message.text or "").strip()[:500])
+
+
+@router.callback_query(F.data == "work_skip_caption", AddWorkStates.caption)
+async def work_skip_caption(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        await call.answer()
+        return
+    await call.answer()
+    await _save_work(call.bot, call.message.chat.id, state, "")
+
+
+@router.callback_query(F.data.startswith("work_list_"))
+async def work_list(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer()
+        return
+    try:
+        page = max(1, int(call.data.split("_")[-1]))
+    except ValueError:
+        page = 1
+    offset = (page - 1) * PHOTOS_PER_PAGE
+    rows, total = get_works(offset, PHOTOS_PER_PAGE)
+    if total == 0:
+        await safe_edit(call, "Пока нет загруженных фото.", reply_markup=admin_back_kb())
+        await call.answer()
+        return
+    total_pages = (total + PHOTOS_PER_PAGE - 1) // PHOTOS_PER_PAGE
+    page = min(page, total_pages)
+    lines = [f"📋 <b>Фото</b> — стр. {page}/{total_pages} (всего: {total})\n"]
+    b = InlineKeyboardBuilder()
+    for wid, _fid, caption in rows:
+        snippet = (caption or "(без подписи)").strip()
+        if len(snippet) > 30:
+            snippet = snippet[:27] + "…"
+        lines.append(f"#{wid}: {snippet}")
+        b.row(InlineKeyboardButton(text=f"🗑 Удалить #{wid}", callback_data=f"work_del_{wid}"))
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton(text="◀️", callback_data=f"work_list_{page - 1}"))
+    if page < total_pages:
+        nav.append(InlineKeyboardButton(text="▶️", callback_data=f"work_list_{page + 1}"))
+    if nav:
+        b.row(*nav)
+    b.row(InlineKeyboardButton(text="🔙 К работам", callback_data="admin_works"))
+    await safe_edit(call, "\n".join(lines), reply_markup=b.as_markup())
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("work_del_"))
+async def work_delete(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer()
+        return
+    try:
+        wid = int(call.data.split("_")[-1])
+    except ValueError:
+        await call.answer()
+        return
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM works WHERE id = ?", (wid,))
+    conn.commit()
+    conn.close()
+    await call.answer("Удалено")
+    await work_list(call.model_copy(update={"data": "work_list_1"}))
+
+
+# ====================== АДМИН: ВИДЫ ЗАБОРОВ ======================
+@router.callback_query(F.data == "admin_types")
+async def admin_types(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        await call.answer()
+        return
+    await state.clear()
+    types = get_fence_types()
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="➕ Добавить тип", callback_data="type_add"))
+    for tid, name, _desc in types:
+        b.row(InlineKeyboardButton(text=name, callback_data=f"type_edit_{tid}"))
+    b.row(InlineKeyboardButton(text="🔙 В админку", callback_data="admin_back"))
+    await safe_edit(
+        call,
+        f"🏗 <b>Управление видами заборов</b>\n\nВсего: <b>{len(types)}</b>\nКликните на тип, чтобы изменить или удалить.",
+        reply_markup=b.as_markup(),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "type_add")
+async def type_add(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        await call.answer()
+        return
+    await state.set_state(AddTypeStates.name)
+    await safe_edit(call, "Введите название нового типа забора:", reply_markup=admin_back_kb())
+    await call.answer()
+
+
+@router.message(AddTypeStates.name)
+async def type_add_name(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    name = (message.text or "").strip()
+    if not (2 <= len(name) <= 60):
+        await message.answer("❌ Название должно быть 2–60 символов.")
+        return
+    await state.update_data(name=name)
+    await state.set_state(AddTypeStates.description)
+    await message.answer(
+        f"Название: <b>{name}</b>\n\nТеперь пришлите описание (можно с HTML-форматированием, до 3000 символов):",
+        reply_markup=admin_back_kb(),
+    )
+
+
+@router.message(AddTypeStates.description)
+async def type_add_desc(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    desc = (message.html_text or message.text or "").strip()
+    if len(desc) > 3000:
+        await message.answer("❌ Описание слишком длинное (макс 3000 символов).")
+        return
+    data = await state.get_data()
+    name = data["name"]
+    conn = _connect()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "INSERT INTO fence_types (name, description, created_at) VALUES (?, ?, ?)",
+            (name, desc, datetime.now().isoformat()),
+        )
+        conn.commit()
+        await message.answer(f"✅ Тип «{name}» добавлен.", reply_markup=admin_back_kb())
+    except sqlite3.IntegrityError:
+        await message.answer("⚠️ Тип с таким названием уже существует.", reply_markup=admin_back_kb())
+    finally:
+        conn.close()
+    await state.clear()
+
+
+@router.callback_query(F.data.startswith("type_edit_"))
+async def type_edit_menu(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer()
+        return
+    try:
+        tid = int(call.data.split("_")[-1])
+    except ValueError:
+        await call.answer()
+        return
+    row = get_fence_type(tid)
+    if not row:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    _id, name, _desc = row
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="✏️ Изменить название", callback_data=f"type_rename_{tid}"))
+    b.row(InlineKeyboardButton(text="📝 Изменить описание", callback_data=f"type_redesc_{tid}"))
+    b.row(InlineKeyboardButton(text="🗑 Удалить", callback_data=f"type_del_{tid}"))
+    b.row(InlineKeyboardButton(text="🔙 К типам", callback_data="admin_types"))
+    await safe_edit(call, f"🏗 <b>{name}</b>\n\nЧто меняем?", reply_markup=b.as_markup())
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("type_rename_"))
+async def type_rename(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        await call.answer()
+        return
+    try:
+        tid = int(call.data.split("_")[-1])
+    except ValueError:
+        await call.answer()
+        return
+    await state.update_data(type_id=tid)
+    await state.set_state(EditTypeStates.waiting_name)
+    await safe_edit(call, "Введите новое название:", reply_markup=admin_back_kb())
+    await call.answer()
+
+
+@router.message(EditTypeStates.waiting_name)
+async def type_rename_save(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    name = (message.text or "").strip()
+    if not (2 <= len(name) <= 60):
+        await message.answer("❌ Название должно быть 2–60 символов.")
+        return
+    data = await state.get_data()
+    tid = data.get("type_id")
+    conn = _connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("UPDATE fence_types SET name = ? WHERE id = ?", (name, tid))
+        conn.commit()
+        await message.answer("✅ Название обновлено.", reply_markup=admin_back_kb())
+    except sqlite3.IntegrityError:
+        await message.answer("⚠️ Такое название уже занято.", reply_markup=admin_back_kb())
+    finally:
+        conn.close()
+    await state.clear()
+
+
+@router.callback_query(F.data.startswith("type_redesc_"))
+async def type_redesc(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        await call.answer()
+        return
+    try:
+        tid = int(call.data.split("_")[-1])
+    except ValueError:
+        await call.answer()
+        return
+    await state.update_data(type_id=tid)
+    await state.set_state(EditTypeStates.waiting_description)
+    await safe_edit(call, "Пришлите новое описание (можно с HTML-форматированием):", reply_markup=admin_back_kb())
+    await call.answer()
+
+
+@router.message(EditTypeStates.waiting_description)
+async def type_redesc_save(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    desc = (message.html_text or message.text or "").strip()
+    if len(desc) > 3000:
+        await message.answer("❌ Слишком длинное (макс 3000 символов).")
+        return
+    data = await state.get_data()
+    tid = data.get("type_id")
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("UPDATE fence_types SET description = ? WHERE id = ?", (desc, tid))
+    conn.commit()
+    conn.close()
+    await message.answer("✅ Описание обновлено.", reply_markup=admin_back_kb())
+    await state.clear()
+
+
+@router.callback_query(F.data.startswith("type_del_"))
+async def type_del(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        await call.answer()
+        return
+    try:
+        tid = int(call.data.split("_")[-1])
+    except ValueError:
+        await call.answer()
+        return
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM fence_types WHERE id = ?", (tid,))
+    conn.commit()
+    conn.close()
+    await call.answer("Удалено")
+    await admin_types(call.model_copy(update={"data": "admin_types"}), state)
+
+
+# ====================== АДМИН: ОТЗЫВЫ ======================
+@router.callback_query(F.data == "admin_reviews")
+async def admin_reviews(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        await call.answer()
+        return
+    await state.clear()
+    rows, total = get_reviews(0, 100)
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="➕ Добавить отзыв", callback_data="review_add"))
+    lines = [f"⭐ <b>Управление отзывами</b>\n\nВсего: <b>{total}</b>\n"]
+    for rid, author, text in rows[:20]:
+        snippet = text[:40] + ("…" if len(text) > 40 else "")
+        lines.append(f"#{rid} <b>{author}</b>: {snippet}")
+        b.row(InlineKeyboardButton(text=f"🗑 Удалить #{rid}", callback_data=f"review_del_{rid}"))
+    if total > 20:
+        lines.append(f"\n…и ещё {total - 20}")
+    b.row(InlineKeyboardButton(text="🔙 В админку", callback_data="admin_back"))
+    await safe_edit(call, "\n".join(lines), reply_markup=b.as_markup())
+    await call.answer()
+
+
+@router.callback_query(F.data == "review_add")
+async def review_add(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        await call.answer()
+        return
+    await state.set_state(AddReviewStates.author)
+    await safe_edit(call, "Введите имя автора (например, <i>Алексей, Ижевск</i>):", reply_markup=admin_back_kb())
+    await call.answer()
+
+
+@router.message(AddReviewStates.author)
+async def review_author(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    author = (message.text or "").strip()
+    if not (2 <= len(author) <= 100):
+        await message.answer("❌ Имя должно быть 2–100 символов.")
+        return
+    await state.update_data(author=author)
+    await state.set_state(AddReviewStates.text)
+    await message.answer("Теперь пришлите текст отзыва (до 2000 символов):", reply_markup=admin_back_kb())
+
+
+@router.message(AddReviewStates.text)
+async def review_text(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    text = (message.text or "").strip()
+    if not (10 <= len(text) <= 2000):
+        await message.answer("❌ Отзыв должен быть 10–2000 символов.")
+        return
+    data = await state.get_data()
+    author = data["author"]
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO reviews (author, text, created_at) VALUES (?, ?, ?)",
+        (author, text, datetime.now().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+    await message.answer("✅ Отзыв добавлен.", reply_markup=admin_back_kb())
+    await state.clear()
+
+
+@router.callback_query(F.data.startswith("review_del_"))
+async def review_delete(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        await call.answer()
+        return
+    try:
+        rid = int(call.data.split("_")[-1])
+    except ValueError:
+        await call.answer()
+        return
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM reviews WHERE id = ?", (rid,))
+    conn.commit()
+    conn.close()
+    await call.answer("Удалено")
+    await admin_reviews(call.model_copy(update={"data": "admin_reviews"}), state)
+
+
+# ====================== АДМИН: УПРАВЛЕНИЕ ЦЕНАМИ ======================
 @router.callback_query(F.data == "admin_prices")
-async def admin_prices_menu(call: CallbackQuery):
-    if call.from_user.id not in ADMINS: return
+async def admin_prices_menu(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        await call.answer()
+        return
+    await state.clear()
     prices = get_prices_dict()
     text = "💰 <b>Текущие цены (руб/м²)</b>\n\n"
     for t, p in prices.items():
         text += f"• {t}: <b>{p}</b>\n"
-    
-    b = InlineKeyboardBuilder()
-    for t in prices.keys():
-        b.button(text=f"Изменить {t}", callback_data=f"edit_price_{t}")
-    b.button(text="🔙 Назад", callback_data="admin_back")
-    b.adjust(1)
-    
-    await call.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=b.as_markup())
 
-@router.callback_query(F.data.startswith("edit_price_"))
-async def edit_price_start(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id not in ADMINS: return
-    fence_type = call.data.split("_", 2)[2]
+    b = InlineKeyboardBuilder()
+    types_list = list(prices.keys())
+    for idx, t in enumerate(types_list):
+        b.row(InlineKeyboardButton(text=f"✏️ {t}", callback_data=f"price_edit_{idx}"))
+    b.row(InlineKeyboardButton(text="🔙 В админку", callback_data="admin_back"))
+
+    await safe_edit(call, text, reply_markup=b.as_markup())
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("price_edit_"))
+async def price_edit_start(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        await call.answer()
+        return
+    try:
+        idx = int(call.data.split("_")[-1])
+    except ValueError:
+        await call.answer()
+        return
+    prices = get_prices_dict()
+    types_list = list(prices.keys())
+    if idx < 0 or idx >= len(types_list):
+        await call.answer("Не найдено", show_alert=True)
+        return
+    fence_type = types_list[idx]
     await state.update_data(fence_type=fence_type)
-    await call.message.edit_text(f"Введите новую цену для <b>{fence_type}</b>:", parse_mode=ParseMode.HTML)
     await state.set_state(EditPriceStates.waiting_price)
+    await safe_edit(call, f"Введите новую цену для <b>{fence_type}</b> (₽/м²):", reply_markup=admin_back_kb())
+    await call.answer()
+
 
 @router.message(EditPriceStates.waiting_price)
 async def save_new_price(message: Message, state: FSMContext):
-    if message.from_user.id not in ADMINS: return
+    if not is_admin(message.from_user.id):
+        return
     try:
-        new_price = int(message.text)
-        data = await state.get_data()
-        fence_type = data['fence_type']
-        
-        conn = sqlite3.connect(DB_NAME)
-        cur = conn.cursor()
-        cur.execute("UPDATE prices SET price_per_m2 = ? WHERE fence_type = ?", (new_price, fence_type))
-        conn.commit()
-        conn.close()
-        
-        await message.answer(f"✅ Цена обновлена!\n{fence_type} → {new_price} ₽/м²")
-        await state.clear()
-    except:
-        await message.answer("❌ Введите число!")
+        new_price = int((message.text or "").strip())
+        if new_price < 0 or new_price > 1_000_000:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введите целое число (0–1 000 000).")
+        return
+    data = await state.get_data()
+    fence_type = data["fence_type"]
+
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("UPDATE prices SET price_per_m2 = ? WHERE fence_type = ?", (new_price, fence_type))
+    conn.commit()
+    conn.close()
+
+    await message.answer(f"✅ Цена обновлена: {fence_type} → <b>{new_price} ₽/м²</b>", reply_markup=admin_back_kb())
+    await state.clear()
+
+
+# ====================== АДМИН: СТАТИСТИКА ======================
+@router.callback_query(F.data == "admin_stats")
+async def admin_stats(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        await call.answer()
+        return
+    await state.clear()
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM users")
+    users_total = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM leads")
+    leads_total = cur.fetchone()[0]
+    cur.execute("SELECT status, COUNT(*) FROM leads GROUP BY status")
+    by_status = dict(cur.fetchall())
+    cur.execute("SELECT COUNT(*) FROM works")
+    works_total = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM reviews")
+    reviews_total = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM fence_types")
+    types_total = cur.fetchone()[0]
+    conn.close()
+
+    lines = ["📊 <b>Статистика</b>\n"]
+    lines.append(f"👥 Пользователей: <b>{users_total}</b>")
+    lines.append(f"📋 Заявок всего: <b>{leads_total}</b>")
+    for s in LEAD_STATUSES:
+        lines.append(f"  • {s}: <b>{by_status.get(s, 0)}</b>")
+    lines.append(f"📸 Фото в галерее: <b>{works_total}</b>")
+    lines.append(f"⭐ Отзывов: <b>{reviews_total}</b>")
+    lines.append(f"🏗 Видов заборов: <b>{types_total}</b>")
+
+    await safe_edit(call, "\n".join(lines), reply_markup=admin_back_kb())
+    await call.answer()
+
+
+# ====================== АДМИН: РАССЫЛКА ======================
+@router.callback_query(F.data == "admin_broadcast")
+async def admin_broadcast_start(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        await call.answer()
+        return
+    await state.set_state(BroadcastStates.waiting_text)
+    await safe_edit(
+        call,
+        "📢 <b>Рассылка</b>\n\nПришлите текст сообщения для рассылки всем пользователям бота (можно с HTML-форматированием):",
+        reply_markup=admin_back_kb(),
+    )
+    await call.answer()
+
+
+@router.message(BroadcastStates.waiting_text)
+async def admin_broadcast_preview(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    text = (message.html_text or message.text or "").strip()
+    if not (1 <= len(text) <= 3500):
+        await message.answer("❌ Сообщение должно быть 1–3500 символов.")
+        return
+    await state.update_data(broadcast_text=text)
+    await state.set_state(BroadcastStates.confirm)
+
+    user_count = len(get_all_user_ids())
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text=f"✅ Отправить ({user_count})", callback_data="broadcast_send"))
+    b.row(InlineKeyboardButton(text="🔙 Отмена", callback_data="admin_back"))
+    await message.answer(
+        f"<b>Превью рассылки:</b>\n\n{text}\n\n———\nПолучат: <b>{user_count}</b> пользователей",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data == "broadcast_send", BroadcastStates.confirm)
+async def admin_broadcast_send(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        await call.answer()
+        return
+    data = await state.get_data()
+    text = data.get("broadcast_text", "")
+    await state.clear()
+    user_ids = get_all_user_ids()
+    await safe_edit(call, f"Отправляю {len(user_ids)} пользователям…", reply_markup=None)
+    await call.answer()
+
+    sent = 0
+    failed = 0
+    for uid in user_ids:
+        try:
+            await call.bot.send_message(uid, text)
+            sent += 1
+        except Exception as e:
+            logger.info("Broadcast failed for %s: %s", uid, e)
+            failed += 1
+        await asyncio.sleep(0.05)
+
+    await call.bot.send_message(
+        call.message.chat.id,
+        f"✅ Рассылка завершена.\nОтправлено: <b>{sent}</b>\nОшибок: <b>{failed}</b>",
+        reply_markup=admin_back_kb(),
+    )
+
+
+# ====================== АДМИН: ЭКСПОРТ ======================
+@router.callback_query(F.data == "admin_export")
+async def admin_export(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        await call.answer()
+        return
+    await state.clear()
+    await call.answer("Готовлю файл…")
+
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, user_id, name, phone, address, comment, calc_data, status, created_at "
+        "FROM leads ORDER BY id DESC"
+    )
+    rows = cur.fetchall()
+    conn.close()
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Заявки"
+    headers = ["№", "Telegram ID", "Имя", "Телефон", "Адрес", "Комментарий", "Расчёт", "Статус", "Создана"]
+    ws.append(headers)
+    for row in rows:
+        ws.append(list(row))
+
+    for col_idx, header in enumerate(headers, start=1):
+        max_len = max([len(str(header))] + [len(str(r[col_idx - 1] or "")) for r in rows] or [10])
+        ws.column_dimensions[chr(64 + col_idx)].width = min(max_len + 2, 60)
+
+    fd, tmp_path = tempfile.mkstemp(prefix="leads_", suffix=".xlsx")
+    os.close(fd)
+    wb.save(tmp_path)
+
+    try:
+        filename = f"leads_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+        await call.bot.send_document(
+            call.message.chat.id,
+            FSInputFile(tmp_path, filename=filename),
+            caption=f"📥 Экспорт заявок: <b>{len(rows)}</b>",
+        )
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+
+    await call.bot.send_message(call.message.chat.id, "Готово.", reply_markup=admin_back_kb())
+
 
 # ====================== ЗАПУСК ======================
 async def main():
@@ -193,6 +1668,7 @@ async def main():
 
     logger.info("🚀 Бот запущен успешно!")
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
