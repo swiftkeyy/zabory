@@ -1,7 +1,6 @@
 """
-Telegram-бот "Заборы под ключ — Ижевск"
-Полная версия с управлением работами и ценами
-aiogram 3.x + SQLite
+Telegram-бот Заборы под ключ — Ижевск
+Версия для Railway
 """
 
 import asyncio
@@ -11,6 +10,7 @@ import os
 from datetime import datetime
 from typing import Dict
 
+from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -22,11 +22,17 @@ from aiogram.types import Message, CallbackQuery, InputMediaPhoto
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # ====================== НАСТРОЙКИ ======================
-TOKEN = "8705623484:AAHuEOSwTpEa6VlXcHwOoxk9H-ao2ChmK7w"                    # ← ВСТАВЬТЕ ТОКЕН
-ADMINS = [5118405789, 5635535380]              # ← ВСТАВЬТЕ ID АДМИНОВ
+load_dotenv()
+
+TOKEN = os.getenv("8705623484:AAHuEOSwTpEa6VlXcHwOoxk9H-ao2ChmK7w")
+ADMIN_IDS = os.getenv("ADMINS", "5118405789, 5635535380")
+
+if not TOKEN:
+    raise ValueError("BOT_TOKEN не указан в переменных окружения!")
+
+ADMINS = [int(x.strip()) for x in ADMIN_IDS.split(",") if x.strip()]
 
 PHOTOS_PER_PAGE = 6
-MAX_WORKS = 30
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
