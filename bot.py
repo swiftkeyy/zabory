@@ -104,9 +104,21 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             author TEXT,
             text TEXT,
-            created_at TEXT
+            created_at TEXT,
+            approved INTEGER DEFAULT 1,
+            user_id INTEGER
         )"""
     )
+
+    # Миграция: добавляем колонки approved и user_id если их нет
+    try:
+        cur.execute("ALTER TABLE reviews ADD COLUMN approved INTEGER DEFAULT 1")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cur.execute("ALTER TABLE reviews ADD COLUMN user_id INTEGER")
+    except sqlite3.OperationalError:
+        pass
 
     default_prices = {
         "Профнастил": 2500,
@@ -235,18 +247,53 @@ def get_fence_type(type_id: int):
     return row
 
 
-def get_reviews(offset: int, limit: int):
+def get_reviews(offset: int, limit: int, approved_only: bool = True):
     conn = _connect()
     cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM reviews")
-    total = cur.fetchone()[0]
-    cur.execute(
-        "SELECT id, author, text FROM reviews ORDER BY id DESC LIMIT ? OFFSET ?",
-        (limit, offset),
-    )
+    if approved_only:
+        cur.execute("SELECT COUNT(*) FROM reviews WHERE approved = 1")
+        total = cur.fetchone()[0]
+        cur.execute(
+            "SELECT id, author, text FROM reviews WHERE approved = 1 ORDER BY id DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        )
+    else:
+        cur.execute("SELECT COUNT(*) FROM reviews")
+        total = cur.fetchone()[0]
+        cur.execute(
+            "SELECT id, author, text FROM reviews ORDER BY id DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        )
     rows = cur.fetchall()
     conn.close()
     return rows, total
+
+
+def get_pending_reviews():
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, author, text, user_id, created_at FROM reviews WHERE approved = 0 ORDER BY id DESC"
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def approve_review(review_id: int):
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("UPDATE reviews SET approved = 1 WHERE id = ?", (review_id,))
+    conn.commit()
+    conn.close()
+
+
+def reject_review(review_id: int):
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM reviews WHERE id = ?", (review_id,))
+    conn.commit()
+    conn.close()
 
 
 def get_works(offset: int, limit: int):
@@ -332,6 +379,11 @@ class EditTypeStates(StatesGroup):
 
 
 class AddReviewStates(StatesGroup):
+    author = State()
+    text = State()
+
+
+class SubmitReviewStates(StatesGroup):
     author = State()
     text = State()
 
@@ -763,11 +815,87 @@ async def reviews_page(call: CallbackQuery):
         nav.append(InlineKeyboardButton(text="Вперёд ▶️", callback_data=f"reviews_{page + 1}"))
     if nav:
         b.row(*nav)
+    b.row(InlineKeyboardButton(text="✍️ Оставить отзыв", callback_data="submit_review"))
     b.row(InlineKeyboardButton(text="📍 Заказать замер", callback_data="lead_start"))
     b.row(InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_main"))
 
     await safe_edit(call, "\n".join(parts), reply_markup=b.as_markup())
     await call.answer()
+
+
+# ====================== ОТПРАВКА ОТЗЫВА ПОЛЬЗОВАТЕЛЕМ ======================
+@router.callback_query(F.data == "submit_review")
+async def submit_review_start(call: CallbackQuery, state: FSMContext):
+    await state.set_state(SubmitReviewStates.author)
+    await safe_edit(
+        call,
+        "✍️ <b>Оставить отзыв</b>\n\nВведите ваше имя (например, <i>Алексей, Ижевск</i>):",
+        reply_markup=cancel_kb(),
+    )
+    await call.answer()
+
+
+@router.message(SubmitReviewStates.author)
+async def submit_review_author(message: Message, state: FSMContext):
+    author = (message.text or "").strip()
+    if not (2 <= len(author) <= 100):
+        await message.answer("❌ Имя должно быть от 2 до 100 символов.")
+        return
+    await state.update_data(author=author)
+    await state.set_state(SubmitReviewStates.text)
+    await message.answer(
+        f"Приятно познакомиться, <b>{author}</b>!\n\nТеперь напишите ваш отзыв (от 10 до 2000 символов):",
+        reply_markup=cancel_kb(),
+    )
+
+
+@router.message(SubmitReviewStates.text)
+async def submit_review_text(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if not (10 <= len(text) <= 2000):
+        await message.answer("❌ Отзыв должен быть от 10 до 2000 символов.")
+        return
+    data = await state.get_data()
+    author = data["author"]
+    user_id = message.from_user.id
+
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO reviews (author, text, created_at, approved, user_id) VALUES (?, ?, ?, 0, ?)",
+        (author, text, datetime.now().isoformat(), user_id),
+    )
+    review_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+
+    await state.clear()
+    await message.answer(
+        "✅ <b>Спасибо за ваш отзыв!</b>\n\n"
+        "Он будет опубликован после проверки администратором.",
+        reply_markup=back_main_kb(),
+    )
+
+    contact = f"@{message.from_user.username}" if message.from_user.username else (
+        message.from_user.full_name or f"id{user_id}"
+    )
+    admin_text = (
+        "⭐ <b>Новый отзыв на модерацию!</b>\n\n"
+        f"<b>#{review_id}</b>\n"
+        f"<b>Автор:</b> {author}\n"
+        f"<b>Текст:</b> {text}\n\n"
+        f"<b>Отправил:</b> {contact} (id <code>{user_id}</code>)"
+    )
+    for admin_id in ADMINS:
+        try:
+            b = InlineKeyboardBuilder()
+            b.row(
+                InlineKeyboardButton(text="✅ Одобрить", callback_data=f"review_approve_{review_id}"),
+                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"review_reject_{review_id}"),
+            )
+            await message.bot.send_message(admin_id, admin_text, reply_markup=b.as_markup())
+        except Exception as e:
+            logger.warning("Failed to notify admin %s about review: %s", admin_id, e)
 
 
 # ====================== ЗАЯВКА НА ЗАМЕР ======================
@@ -1376,8 +1504,16 @@ async def admin_reviews(call: CallbackQuery, state: FSMContext):
     await state.clear()
     rows, total = get_reviews(0, 100)
     b = InlineKeyboardBuilder()
+    pending = get_pending_reviews()
+    pending_count = len(pending)
+
     b.row(InlineKeyboardButton(text="➕ Добавить отзыв", callback_data="review_add"))
-    lines = [f"⭐ <b>Управление отзывами</b>\n\nВсего: <b>{total}</b>\n"]
+    if pending_count > 0:
+        b.row(InlineKeyboardButton(
+            text=f"🕐 На модерации ({pending_count})",
+            callback_data="admin_pending_reviews",
+        ))
+    lines = [f"⭐ <b>Управление отзывами</b>\n\nОпубликовано: <b>{total}</b>\nНа модерации: <b>{pending_count}</b>\n"]
     for rid, author, text in rows[:20]:
         snippet = text[:40] + ("…" if len(text) > 40 else "")
         lines.append(f"#{rid} <b>{author}</b>: {snippet}")
@@ -1451,6 +1587,180 @@ async def review_delete(call: CallbackQuery, state: FSMContext):
     conn.close()
     await call.answer("Удалено")
     await admin_reviews(call.model_copy(update={"data": "admin_reviews"}), state)
+
+
+# ====================== АДМИН: МОДЕРАЦИЯ ОТЗЫВОВ ======================
+@router.callback_query(F.data == "admin_pending_reviews")
+async def admin_pending_reviews_list(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        await call.answer()
+        return
+    await state.clear()
+    pending = get_pending_reviews()
+    if not pending:
+        await safe_edit(
+            call,
+            "🕐 <b>Модерация отзывов</b>\n\nНет отзывов, ожидающих проверки.",
+            reply_markup=admin_back_kb(),
+        )
+        await call.answer()
+        return
+
+    lines = [f"🕐 <b>Отзывы на модерации</b> ({len(pending)})\n"]
+    b = InlineKeyboardBuilder()
+    for rid, author, text, user_id, created_at in pending[:20]:
+        snippet = text[:40] + ("…" if len(text) > 40 else "")
+        date_str = created_at[:16].replace("T", " ") if created_at else ""
+        lines.append(f"#{rid} <b>{author}</b>: {snippet}\n<i>{date_str}</i>")
+        b.row(
+            InlineKeyboardButton(text=f"✅ #{rid}", callback_data=f"review_approve_{rid}"),
+            InlineKeyboardButton(text=f"❌ #{rid}", callback_data=f"review_reject_{rid}"),
+        )
+        b.row(InlineKeyboardButton(text=f"👁 Подробнее #{rid}", callback_data=f"review_detail_{rid}"))
+    if len(pending) > 20:
+        lines.append(f"\n…и ещё {len(pending) - 20}")
+    b.row(InlineKeyboardButton(text="🔙 К отзывам", callback_data="admin_reviews"))
+    b.row(InlineKeyboardButton(text="🔙 В админку", callback_data="admin_back"))
+
+    await safe_edit(call, "\n".join(lines), reply_markup=b.as_markup())
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("review_detail_"))
+async def review_detail(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer()
+        return
+    try:
+        rid = int(call.data.split("_")[-1])
+    except ValueError:
+        await call.answer()
+        return
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, author, text, user_id, created_at, approved FROM reviews WHERE id = ?",
+        (rid,),
+    )
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        await call.answer("Отзыв не найден", show_alert=True)
+        return
+    _id, author, text, user_id, created_at, approved = row
+    status = "Опубликован" if approved else "Ожидает модерации"
+    date_str = created_at[:16].replace("T", " ") if created_at else ""
+    msg = (
+        f"⭐ <b>Отзыв #{_id}</b>\n\n"
+        f"<b>Статус:</b> {status}\n"
+        f"<b>Автор:</b> {author}\n"
+        f"<b>Telegram ID:</b> <code>{user_id or '—'}</code>\n"
+        f"<b>Дата:</b> {date_str}\n\n"
+        f"<b>Текст:</b>\n{text}"
+    )
+    b = InlineKeyboardBuilder()
+    if not approved:
+        b.row(
+            InlineKeyboardButton(text="✅ Одобрить", callback_data=f"review_approve_{rid}"),
+            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"review_reject_{rid}"),
+        )
+    b.row(InlineKeyboardButton(text="🔙 К модерации", callback_data="admin_pending_reviews"))
+    b.row(InlineKeyboardButton(text="🔙 В админку", callback_data="admin_back"))
+    await safe_edit(call, msg, reply_markup=b.as_markup())
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("review_approve_"))
+async def review_approve_handler(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer()
+        return
+    try:
+        rid = int(call.data.split("_")[-1])
+    except ValueError:
+        await call.answer()
+        return
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("SELECT author, user_id FROM reviews WHERE id = ? AND approved = 0", (rid,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        await call.answer("Отзыв уже одобрен или не найден", show_alert=True)
+        return
+    author, user_id = row
+    cur.execute("UPDATE reviews SET approved = 1 WHERE id = ?", (rid,))
+    conn.commit()
+    conn.close()
+    await call.answer(f"Отзыв #{rid} одобрен!")
+
+    if user_id:
+        try:
+            await call.bot.send_message(
+                user_id,
+                f"✅ Ваш отзыв был опубликован! Спасибо, <b>{author}</b>!",
+            )
+        except Exception as e:
+            logger.warning("Failed to notify user %s about approved review: %s", user_id, e)
+
+    try:
+        await safe_edit(
+            call,
+            f"✅ Отзыв #{rid} от <b>{author}</b> одобрен и опубликован.",
+            reply_markup=InlineKeyboardBuilder().row(
+                InlineKeyboardButton(text="🕐 К модерации", callback_data="admin_pending_reviews"),
+                InlineKeyboardButton(text="🔙 В админку", callback_data="admin_back"),
+            ).as_markup(),
+        )
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.startswith("review_reject_"))
+async def review_reject_handler(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer()
+        return
+    try:
+        rid = int(call.data.split("_")[-1])
+    except ValueError:
+        await call.answer()
+        return
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("SELECT author, user_id FROM reviews WHERE id = ? AND approved = 0", (rid,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        await call.answer("Отзыв уже обработан или не найден", show_alert=True)
+        return
+    author, user_id = row
+    cur.execute("DELETE FROM reviews WHERE id = ?", (rid,))
+    conn.commit()
+    conn.close()
+    await call.answer(f"Отзыв #{rid} отклонён")
+
+    if user_id:
+        try:
+            await call.bot.send_message(
+                user_id,
+                "К сожалению, ваш отзыв не прошёл модерацию. "
+                "Попробуйте написать новый, следуя правилам.",
+            )
+        except Exception as e:
+            logger.warning("Failed to notify user %s about rejected review: %s", user_id, e)
+
+    try:
+        await safe_edit(
+            call,
+            f"❌ Отзыв #{rid} от <b>{author}</b> отклонён и удалён.",
+            reply_markup=InlineKeyboardBuilder().row(
+                InlineKeyboardButton(text="🕐 К модерации", callback_data="admin_pending_reviews"),
+                InlineKeyboardButton(text="🔙 В админку", callback_data="admin_back"),
+            ).as_markup(),
+        )
+    except Exception:
+        pass
 
 
 # ====================== АДМИН: УПРАВЛЕНИЕ ЦЕНАМИ ======================
@@ -1538,8 +1848,10 @@ async def admin_stats(call: CallbackQuery, state: FSMContext):
     by_status = dict(cur.fetchall())
     cur.execute("SELECT COUNT(*) FROM works")
     works_total = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM reviews")
+    cur.execute("SELECT COUNT(*) FROM reviews WHERE approved = 1")
     reviews_total = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM reviews WHERE approved = 0")
+    reviews_pending = cur.fetchone()[0]
     cur.execute("SELECT COUNT(*) FROM fence_types")
     types_total = cur.fetchone()[0]
     conn.close()
@@ -1551,6 +1863,8 @@ async def admin_stats(call: CallbackQuery, state: FSMContext):
         lines.append(f"  • {s}: <b>{by_status.get(s, 0)}</b>")
     lines.append(f"📸 Фото в галерее: <b>{works_total}</b>")
     lines.append(f"⭐ Отзывов: <b>{reviews_total}</b>")
+    if reviews_pending > 0:
+        lines.append(f"  • На модерации: <b>{reviews_pending}</b>")
     lines.append(f"🏗 Видов заборов: <b>{types_total}</b>")
 
     await safe_edit(call, "\n".join(lines), reply_markup=admin_back_kb())
