@@ -620,7 +620,7 @@ async def calc_pick_type(call: CallbackQuery, state: FSMContext):
         f"• Материал: <b>{fence_type}</b>\n"
         f"• Размеры: <b>{length} × {height} м</b>\n"
         f"• Площадь: <b>{area:.1f} м²</b>\n"
-        f"• Цена за м²: <b>{price_per_m2} ₽</b>\n\n"
+        f"• Цена за м²: <b>{price_per_m2} ₽</b> (материал, без работы)\n\n"
         f"💰 <b>Итого: ~{total:,} ₽</b>\n\n".replace(",", " ")
         + "⚠️ Это предварительный расчёт. Финальная стоимость определяется на бесплатном замере "
         "(учитываются рельеф, ворота, калитка, доставка)."
@@ -743,7 +743,7 @@ async def type_detail(call: CallbackQuery):
     price = prices.get(name)
     text = description or f"<b>{name}</b>"
     if price:
-        text += f"\n\n💰 Цена: <b>{price} ₽/м²</b>"
+        text += f"\n\n💰 Цена: <b>{price} ₽/м²</b> (материал, без учёта работы)"
 
     b = InlineKeyboardBuilder()
     b.row(InlineKeyboardButton(text="🧮 Рассчитать стоимость", callback_data="calc_start"))
@@ -770,7 +770,8 @@ async def prices_view(call: CallbackQuery):
     lines = ["💰 <b>Прайс-лист (руб/м²)</b>\n"]
     for t, p in prices.items():
         lines.append(f"• {t}: <b>{p} ₽</b>")
-    lines.append("\nЦены ориентировочные. Финальная стоимость — после бесплатного замера.")
+    lines.append("\n⚠️ Цены указаны за материал, без учёта работы.")
+    lines.append("Финальная стоимость — после бесплатного замера.")
 
     b = InlineKeyboardBuilder()
     b.row(InlineKeyboardButton(text="🧮 Рассчитать стоимость", callback_data="calc_start"))
