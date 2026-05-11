@@ -16,7 +16,7 @@ from aiogram.types import Message, CallbackQuery, InputMediaPhoto, FSInputFile, 
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # ====================== НАСТРОЙКИ ======================
-TOKEN = os.getenv("8705623484:AAHuEOSwTpEa6VlXcHwOoxk9H-ao2ChmK7w")
+TOKEN = os.getenv("BOT_TOKEN", "8705623484:AAHuEOSwTpEa6VlXcHwOoxk9H-ao2ChmK7w")
 ADMINS_STR = os.getenv("ADMINS", "5118405789, 5635535380")
 
 if not TOKEN:
