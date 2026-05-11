@@ -12,11 +12,11 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import Message, CallbackQuery, InputMediaPhoto, FSInputFile
+from aiogram.types import Message, CallbackQuery, InputMediaPhoto, FSInputFile, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # ====================== НАСТРОЙКИ ======================
-TOKEN = os.getenv("8705623484:AAHuEOSwTpEa6VlXcHwOoxk9H-ao2ChmK7w")
+TOKEN = os.getenv("BOT_TOKEN")
 ADMINS_STR = os.getenv("ADMINS", "5118405789, 5635535380")
 
 if not TOKEN:
