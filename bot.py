@@ -1,8 +1,3 @@
-"""
-Telegram-бот Заборы под ключ — Ижевск
-Версия для Railway
-"""
-
 import asyncio
 import logging
 import sqlite3
@@ -10,7 +5,6 @@ import os
 from datetime import datetime
 from typing import Dict
 
-from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -22,15 +16,12 @@ from aiogram.types import Message, CallbackQuery, InputMediaPhoto
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # ====================== НАСТРОЙКИ ======================
-load_dotenv()
-
 TOKEN = os.getenv("8705623484:AAHuEOSwTpEa6VlXcHwOoxk9H-ao2ChmK7w")
-ADMIN_IDS = os.getenv("ADMINS", "5118405789, 5635535380")
 
 if not TOKEN:
-    raise ValueError("BOT_TOKEN не указан в переменных окружения!")
+    raise ValueError("❌ BOT_TOKEN не найден! Добавь его в Variables на Railway.")
 
-ADMINS = [int(x.strip()) for x in ADMIN_IDS.split(",") if x.strip()]
+ADMINS = [int(x.strip()) for x in os.getenv("ADMINS", "5118405789, 5635535380").split(",") if x.strip()]
 
 PHOTOS_PER_PAGE = 6
 
@@ -38,6 +29,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 DB_NAME = "fence_bot.db"
+
+print(f"✅ Бот запущен. Админы: {ADMINS}")
 
 # ====================== БАЗА ДАННЫХ ======================
 def init_db():
