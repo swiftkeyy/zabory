@@ -1120,7 +1120,7 @@ async def cmd_calc_type(event: MessageEvent, payload: dict):
         f"- Материал: {fence_type}\n"
         f"- Размеры: {length} × {height} м\n"
         f"- Площадь: {area:.1f} м²\n"
-        f"- Цена за м²: {price_per_m2} ₽\n\n"
+        f"- Цена за м²: {price_per_m2} ₽ (материал, без работы)\n\n"
         f"💰 Итого: ~{total_formatted} ₽\n\n"
         f"⚠️ Это предварительный расчёт. Финальная стоимость определяется на бесплатном замере."
     )
@@ -1226,7 +1226,7 @@ async def cmd_ftype(event: MessageEvent, payload: dict):
     price = prices.get(name)
     text = strip_html(description or name)
     if price:
-        text += f"\n\n💰 Цена: {price} ₽/м²"
+        text += f"\n\n💰 Цена: {price} ₽/м² (материал, без учёта работы)"
 
     kb = (
         Keyboard(inline=True)
@@ -1254,7 +1254,8 @@ async def cmd_prices(event: MessageEvent):
     lines = ["💰 ПРАЙС-ЛИСТ (руб/м²)\n"]
     for t, p in prices.items():
         lines.append(f"- {t}: {p} ₽")
-    lines.append("\nЦены ориентировочные. Финальная стоимость — после бесплатного замера.")
+    lines.append("\n⚠️ Цены указаны за материал, без учёта работы.")
+    lines.append("Финальная стоимость — после бесплатного замера.")
 
     kb = (
         Keyboard(inline=True)
