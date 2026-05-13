@@ -1536,16 +1536,58 @@ async def cmd_work_skip_caption(event: MessageEvent):
 async def cmd_admin_types(event: MessageEvent):
     if not is_admin(event.user_id):
         return
+
     types = get_fence_types()
+
     kb = Keyboard(inline=True)
-    kb.add(Callback("➕ Добавить тип", payload={"cmd": "type_add"}))
-    for tid, name, _desc in types:
+
+    kb.add(
+        Callback(
+            "➕ Добавить тип",
+            payload={"cmd": "type_add"}
+        )
+    )
+
+    max_buttons = 8
+
+    for i, (tid, name, _desc) in enumerate(types[:max_buttons]):
         kb.row()
-        kb.add(Callback(name, payload={"cmd": "type_edit", "id": tid}))
+
+        # VK не любит длинные кнопки
+        short_name = name[:30]
+
+        kb.add(
+            Callback(
+                short_name,
+                payload={
+                    "cmd": "type_edit",
+                    "id": tid
+                }
+            )
+        )
+
+    if len(types) > max_buttons:
+        kb.row()
+        kb.add(
+            Callback(
+                f"Ещё ({len(types)-max_buttons})",
+                payload={"cmd": "types_more"}
+            )
+        )
+
     kb.row()
-    kb.add(Callback("🔙 В админку", payload={"cmd": "admin_back"}))
+
+    kb.add(
+        Callback(
+            "🔙 В админку",
+            payload={"cmd": "admin_back"}
+        )
+    )
+
     await event.edit_message(
-        f"🏗 УПРАВЛЕНИЕ ВИДАМИ ЗАБОРОВ\n\nВсего: {len(types)}\nКликните на тип, чтобы изменить или удалить.",
+        f"🏗 УПРАВЛЕНИЕ ВИДАМИ ЗАБОРОВ\n\n"
+        f"Всего: {len(types)}\n"
+        f"Кликните на тип, чтобы изменить или удалить.",
         keyboard=kb.get_json(),
     )
 
