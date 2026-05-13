@@ -27,8 +27,15 @@ if not TOKEN:
     raise ValueError("VK_BOT_TOKEN не найден! Добавь его в Variables на Railway.")
 
 PHOTOS_PER_PAGE = 6
-LEADS_PER_PAGE = 5
+LEADS_PER_PAGE = 4
 REVIEWS_PER_PAGE = 3
+ADMIN_TYPES_PER_PAGE = 4
+PUBLIC_TYPES_PER_PAGE = 4
+ADMIN_WORKS_PER_PAGE = 4
+ADMIN_REVIEWS_PER_PAGE = 3
+PENDING_PER_PAGE = 4
+PRICES_PER_PAGE = 4
+CALC_TYPES_PER_PAGE = 4
 LEAD_STATUSES = ["Новая", "В работе", "Закрыта", "Отказ"]
 
 logging.basicConfig(level=logging.INFO)
@@ -462,6 +469,50 @@ def admin_back_kb():
     )
 
 
+def _paginate(items, page: int, per_page: int):
+    """Возвращает (chunk, page, total_pages) с защитой от выхода за границы."""
+    total = len(items)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = max(1, min(page, total_pages))
+    offset = (page - 1) * per_page
+    return items[offset:offset + per_page], page, total_pages
+
+
+def _add_nav_row(kb: Keyboard, page: int, total_pages: int, cmd: str,
+                 back_label: str, back_cmd: str, extra: dict | None = None):
+    """Добавляет строку с навигацией и кнопкой возврата (укладывается в одну строку)."""
+    extra = extra or {}
+    kb.row()
+    if page > 1:
+        kb.add(Callback("◀️", payload={"cmd": cmd, "p": page - 1, **extra}))
+    if total_pages > 1:
+        kb.add(Callback(f"{page}/{total_pages}", payload={"cmd": "noop"}))
+    if page < total_pages:
+        kb.add(Callback("▶️", payload={"cmd": cmd, "p": page + 1, **extra}))
+    kb.add(Callback(back_label, payload={"cmd": back_cmd}))
+
+
+def _calc_types_kb(types_list, prices, page: int):
+    """Клавиатура выбора материала в калькуляторе с пагинацией."""
+    indexed = list(enumerate(types_list))
+    chunk, page, total_pages = _paginate(indexed, page, CALC_TYPES_PER_PAGE)
+    kb = Keyboard(inline=True)
+    for i, (idx, t) in enumerate(chunk):
+        if i > 0:
+            kb.row()
+        label = f"{t} — {prices.get(t, 0)} ₽/м²"[:40]
+        kb.add(Callback(label, payload={"cmd": "calc_type", "i": idx}))
+    kb.row()
+    if page > 1:
+        kb.add(Callback("◀️", payload={"cmd": "calc_page", "p": page - 1}))
+    if total_pages > 1:
+        kb.add(Callback(f"{page}/{total_pages}", payload={"cmd": "noop"}))
+    if page < total_pages:
+        kb.add(Callback("▶️", payload={"cmd": "calc_page", "p": page + 1}))
+    kb.add(Callback("❌", payload={"cmd": "cancel"}))
+    return kb.get_json()
+
+
 async def _clear_state(peer_id: int):
     try:
         await bot.state_dispenser.delete(peer_id)
@@ -575,14 +626,8 @@ async def calc_height_handler(message: Message):
     await bot.state_dispenser.set(
         message.peer_id, CalcStates.HEIGHT, length=length, height=v, price_types=types_list
     )
-    kb = Keyboard(inline=True)
-    for idx, t in enumerate(types_list):
-        if idx > 0:
-            kb.row()
-        kb.add(Callback(f"{t} — {prices[t]} ₽/м²", payload={"cmd": "calc_type", "i": idx}))
-    kb.row()
-    kb.add(Callback("❌ Отмена", payload={"cmd": "cancel"}))
-    await message.answer(f"Высота: {v} м\n\nВыберите материал забора:", keyboard=kb.get_json())
+    kb = _calc_types_kb(types_list, prices, page=1)
+    await message.answer(f"Высота: {v} м\n\nВыберите материал забора:", keyboard=kb)
 
 
 # --- Заявка: имя ---
@@ -1002,14 +1047,18 @@ async def handle_callback(event: MessageEvent):
     elif cmd == "cancel":
         await _clear_state(event.peer_id)
         await event.edit_message(MAIN_TEXT, keyboard=main_menu_kb())
+    elif cmd == "noop":
+        await event.show_snackbar("")
     elif cmd == "calc_start":
         await cmd_calc_start(event)
     elif cmd == "calc_type":
         await cmd_calc_type(event, payload)
+    elif cmd == "calc_page":
+        await cmd_calc_page(event, payload)
     elif cmd == "works":
         await cmd_works(event, payload)
     elif cmd == "types":
-        await cmd_types(event)
+        await cmd_types(event, payload)
     elif cmd == "ftype":
         await cmd_ftype(event, payload)
     elif cmd == "prices":
@@ -1047,7 +1096,7 @@ async def handle_callback(event: MessageEvent):
     elif cmd == "work_skip_caption":
         await cmd_work_skip_caption(event)
     elif cmd == "admin_types":
-        await cmd_admin_types(event)
+        await cmd_admin_types(event, payload)
     elif cmd == "type_add":
         await cmd_type_add(event)
     elif cmd == "type_edit":
@@ -1059,13 +1108,13 @@ async def handle_callback(event: MessageEvent):
     elif cmd == "type_del":
         await cmd_type_del(event, payload)
     elif cmd == "admin_reviews":
-        await cmd_admin_reviews(event)
+        await cmd_admin_reviews(event, payload)
     elif cmd == "review_add":
         await cmd_review_add(event)
     elif cmd == "review_del":
         await cmd_review_del(event, payload)
     elif cmd == "admin_pending":
-        await cmd_admin_pending(event)
+        await cmd_admin_pending(event, payload)
     elif cmd == "review_detail":
         await cmd_review_detail(event, payload)
     elif cmd == "review_approve":
@@ -1073,7 +1122,7 @@ async def handle_callback(event: MessageEvent):
     elif cmd == "review_reject":
         await cmd_review_reject(event, payload)
     elif cmd == "admin_prices":
-        await cmd_admin_prices(event)
+        await cmd_admin_prices(event, payload)
     elif cmd == "price_edit":
         await cmd_price_edit(event, payload)
     elif cmd == "admin_stats":
@@ -1144,6 +1193,25 @@ async def cmd_calc_type(event: MessageEvent, payload: dict):
     await event.edit_message(text, keyboard=kb)
 
 
+async def cmd_calc_page(event: MessageEvent, payload: dict):
+    state = await bot.state_dispenser.get(event.peer_id)
+    if not state:
+        await event.show_snackbar("Начните расчёт заново")
+        return
+    data = state.payload or {}
+    types_list = data.get("price_types", [])
+    if not types_list:
+        await event.show_snackbar("Начните расчёт заново")
+        return
+    prices = get_prices_dict()
+    page = max(1, payload.get("p", 1))
+    height = data.get("height", 0)
+    kb = _calc_types_kb(types_list, prices, page=page)
+    await event.edit_message(
+        f"Высота: {height} м\n\nВыберите материал забора:", keyboard=kb
+    )
+
+
 # --- Наши работы ---
 async def cmd_works(event: MessageEvent, payload: dict):
     page = max(1, payload.get("p", 1))
@@ -1197,7 +1265,7 @@ async def cmd_works(event: MessageEvent, payload: dict):
 
 
 # --- Виды заборов ---
-async def cmd_types(event: MessageEvent):
+async def cmd_types(event: MessageEvent, payload: dict | None = None):
     types = get_fence_types()
     if not types:
         await event.edit_message(
@@ -1206,15 +1274,18 @@ async def cmd_types(event: MessageEvent):
         )
         return
 
+    page = max(1, (payload or {}).get("p", 1))
+    chunk, page, total_pages = _paginate(types, page, PUBLIC_TYPES_PER_PAGE)
+
     kb = Keyboard(inline=True)
-    for i, (tid, name, _desc) in enumerate(types):
+    for i, (tid, name, _desc) in enumerate(chunk):
         if i > 0:
             kb.row()
-        kb.add(Callback(name, payload={"cmd": "ftype", "id": tid}))
-    kb.row()
-    kb.add(Callback("🏠 Главное меню", payload={"cmd": "main"}))
+        kb.add(Callback(name[:30], payload={"cmd": "ftype", "id": tid}))
+    _add_nav_row(kb, page, total_pages, "types", "🏠", "main")
+    suffix = f"\n\nСтр. {page}/{total_pages}" if total_pages > 1 else ""
     await event.edit_message(
-        "🏗 ВИДЫ ЗАБОРОВ\n\nВыберите тип, чтобы посмотреть подробности:",
+        f"🏗 ВИДЫ ЗАБОРОВ\n\nВыберите тип, чтобы посмотреть подробности:{suffix}",
         keyboard=kb.get_json(),
     )
 
@@ -1362,23 +1433,13 @@ async def cmd_admin_leads(event: MessageEvent, payload: dict):
 
     lines = [f"📋 ЗАЯВКИ — стр. {page}/{total_pages} (всего: {total})\n"]
     kb = Keyboard(inline=True)
-    for lid, name, phone, status, created_at in rows:
+    for i, (lid, name, phone, status, created_at) in enumerate(rows):
         date_str = created_at[:16].replace("T", " ") if created_at else ""
         lines.append(f"#{lid} - {name} - {phone} - {status} - {date_str}")
-        kb.row()
-        kb.add(Callback(f"#{lid} {name}", payload={"cmd": "lead_view", "id": lid}))
-
-    nav = []
-    if page > 1:
-        nav.append(Callback("◀️", payload={"cmd": "admin_leads", "p": page - 1}))
-    if page < total_pages:
-        nav.append(Callback("▶️", payload={"cmd": "admin_leads", "p": page + 1}))
-    if nav:
-        kb.row()
-        for n in nav:
-            kb.add(n)
-    kb.row()
-    kb.add(Callback("🔙 В админку", payload={"cmd": "admin_back"}))
+        if i > 0:
+            kb.row()
+        kb.add(Callback(f"#{lid} {name[:20]}", payload={"cmd": "lead_view", "id": lid}))
+    _add_nav_row(kb, page, total_pages, "admin_leads", "🔙", "admin_back")
     await event.edit_message("\n".join(lines), keyboard=kb.get_json())
 
 
@@ -1478,33 +1539,24 @@ async def cmd_work_list(event: MessageEvent, payload: dict):
     if not is_admin(event.user_id):
         return
     page = max(1, payload.get("p", 1))
-    offset = (page - 1) * PHOTOS_PER_PAGE
-    rows, total = get_vk_works(offset, PHOTOS_PER_PAGE)
+    offset = (page - 1) * ADMIN_WORKS_PER_PAGE
+    rows, total = get_vk_works(offset, ADMIN_WORKS_PER_PAGE)
     if total == 0:
         await event.edit_message("Пока нет загруженных фото.", keyboard=admin_back_kb())
         return
-    total_pages = (total + PHOTOS_PER_PAGE - 1) // PHOTOS_PER_PAGE
+    total_pages = (total + ADMIN_WORKS_PER_PAGE - 1) // ADMIN_WORKS_PER_PAGE
     page = min(page, total_pages)
     lines = [f"📋 ФОТО — стр. {page}/{total_pages} (всего: {total})\n"]
     kb = Keyboard(inline=True)
-    for wid, _att, caption in rows:
+    for i, (wid, _att, caption) in enumerate(rows):
         snippet = (caption or "(без подписи)").strip()
         if len(snippet) > 30:
             snippet = snippet[:27] + "…"
         lines.append(f"#{wid}: {snippet}")
-        kb.row()
-        kb.add(Callback(f"🗑 Удалить #{wid}", payload={"cmd": "work_del", "id": wid}))
-    nav = []
-    if page > 1:
-        nav.append(Callback("◀️", payload={"cmd": "work_list", "p": page - 1}))
-    if page < total_pages:
-        nav.append(Callback("▶️", payload={"cmd": "work_list", "p": page + 1}))
-    if nav:
-        kb.row()
-        for n in nav:
-            kb.add(n)
-    kb.row()
-    kb.add(Callback("🔙 К работам", payload={"cmd": "admin_works"}))
+        if i > 0:
+            kb.row()
+        kb.add(Callback(f"🗑 #{wid}", payload={"cmd": "work_del", "id": wid}))
+    _add_nav_row(kb, page, total_pages, "work_list", "🔙", "admin_works")
     await event.edit_message("\n".join(lines), keyboard=kb.get_json())
 
 
@@ -1533,60 +1585,25 @@ async def cmd_work_skip_caption(event: MessageEvent):
 
 
 # ====================== АДМИН: ВИДЫ ЗАБОРОВ ======================
-async def cmd_admin_types(event: MessageEvent):
+async def cmd_admin_types(event: MessageEvent, payload: dict | None = None):
     if not is_admin(event.user_id):
         return
 
     types = get_fence_types()
+    page = max(1, (payload or {}).get("p", 1))
+    chunk, page, total_pages = _paginate(types, page, ADMIN_TYPES_PER_PAGE)
 
     kb = Keyboard(inline=True)
-
-    kb.add(
-        Callback(
-            "➕ Добавить тип",
-            payload={"cmd": "type_add"}
-        )
-    )
-
-    max_buttons = 8
-
-    for i, (tid, name, _desc) in enumerate(types[:max_buttons]):
+    kb.add(Callback("➕ Добавить тип", payload={"cmd": "type_add"}))
+    for tid, name, _desc in chunk:
         kb.row()
+        kb.add(Callback(name[:30], payload={"cmd": "type_edit", "id": tid}))
+    _add_nav_row(kb, page, total_pages, "admin_types", "🔙", "admin_back")
 
-        # VK не любит длинные кнопки
-        short_name = name[:30]
-
-        kb.add(
-            Callback(
-                short_name,
-                payload={
-                    "cmd": "type_edit",
-                    "id": tid
-                }
-            )
-        )
-
-    if len(types) > max_buttons:
-        kb.row()
-        kb.add(
-            Callback(
-                f"Ещё ({len(types)-max_buttons})",
-                payload={"cmd": "types_more"}
-            )
-        )
-
-    kb.row()
-
-    kb.add(
-        Callback(
-            "🔙 В админку",
-            payload={"cmd": "admin_back"}
-        )
-    )
-
+    suffix = f"\nСтр. {page}/{total_pages}" if total_pages > 1 else ""
     await event.edit_message(
         f"🏗 УПРАВЛЕНИЕ ВИДАМИ ЗАБОРОВ\n\n"
-        f"Всего: {len(types)}\n"
+        f"Всего: {len(types)}{suffix}\n"
         f"Кликните на тип, чтобы изменить или удалить.",
         keyboard=kb.get_json(),
     )
@@ -1652,29 +1669,34 @@ async def cmd_type_del(event: MessageEvent, payload: dict):
 
 
 # ====================== АДМИН: ОТЗЫВЫ ======================
-async def cmd_admin_reviews(event: MessageEvent):
+async def cmd_admin_reviews(event: MessageEvent, payload: dict | None = None):
     if not is_admin(event.user_id):
         return
-    rows, total = get_reviews(0, 100)
     pending = get_pending_reviews()
     pending_count = len(pending)
+    page = max(1, (payload or {}).get("p", 1))
+    offset = (page - 1) * ADMIN_REVIEWS_PER_PAGE
+    rows, total = get_reviews(offset, ADMIN_REVIEWS_PER_PAGE)
+    total_pages = max(1, (total + ADMIN_REVIEWS_PER_PAGE - 1) // ADMIN_REVIEWS_PER_PAGE)
+    page = min(page, total_pages)
 
     kb = Keyboard(inline=True)
-    kb.add(Callback("➕ Добавить отзыв", payload={"cmd": "review_add"}))
+    kb.add(Callback("➕ Добавить", payload={"cmd": "review_add"}))
     if pending_count > 0:
-        kb.row()
-        kb.add(Callback(f"🕐 На модерации ({pending_count})", payload={"cmd": "admin_pending"}))
+        kb.add(Callback(f"🕐 Модерация ({pending_count})", payload={"cmd": "admin_pending"}))
 
-    lines = [f"⭐ УПРАВЛЕНИЕ ОТЗЫВАМИ\n\nОпубликовано: {total}\nНа модерации: {pending_count}\n"]
-    for rid, author, text in rows[:15]:
+    lines = [
+        f"⭐ УПРАВЛЕНИЕ ОТЗЫВАМИ\n\n"
+        f"Опубликовано: {total}\n"
+        f"На модерации: {pending_count}\n"
+        f"Стр. {page}/{total_pages}\n"
+    ]
+    for rid, author, text in rows:
         snippet = text[:40] + ("…" if len(text) > 40 else "")
         lines.append(f"#{rid} {author}: {snippet}")
         kb.row()
-        kb.add(Callback(f"🗑 Удалить #{rid}", payload={"cmd": "review_del", "id": rid}))
-    if total > 15:
-        lines.append(f"\n…и ещё {total - 15}")
-    kb.row()
-    kb.add(Callback("🔙 В админку", payload={"cmd": "admin_back"}))
+        kb.add(Callback(f"🗑 #{rid}", payload={"cmd": "review_del", "id": rid}))
+    _add_nav_row(kb, page, total_pages, "admin_reviews", "🔙", "admin_back")
     await event.edit_message("\n".join(lines), keyboard=kb.get_json())
 
 
@@ -1701,7 +1723,7 @@ async def cmd_review_del(event: MessageEvent, payload: dict):
 
 
 # ====================== АДМИН: МОДЕРАЦИЯ ОТЗЫВОВ ======================
-async def cmd_admin_pending(event: MessageEvent):
+async def cmd_admin_pending(event: MessageEvent, payload: dict | None = None):
     if not is_admin(event.user_id):
         return
     pending = get_pending_reviews()
@@ -1712,21 +1734,20 @@ async def cmd_admin_pending(event: MessageEvent):
         )
         return
 
-    lines = [f"🕐 ОТЗЫВЫ НА МОДЕРАЦИИ ({len(pending)})\n"]
+    page = max(1, (payload or {}).get("p", 1))
+    chunk, page, total_pages = _paginate(pending, page, PENDING_PER_PAGE)
+
+    lines = [f"🕐 ОТЗЫВЫ НА МОДЕРАЦИИ ({len(pending)}) — стр. {page}/{total_pages}\n"]
     kb = Keyboard(inline=True)
-    for rid, author, text, user_id, created_at in pending[:10]:
+    for i, (rid, author, text, _user_id, created_at) in enumerate(chunk):
         snippet = text[:40] + ("…" if len(text) > 40 else "")
         date_str = created_at[:16].replace("T", " ") if created_at else ""
         lines.append(f"#{rid} {author}: {snippet}\n{date_str}")
-        kb.row()
+        if i > 0:
+            kb.row()
         kb.add(Callback(f"✅ #{rid}", payload={"cmd": "review_approve", "id": rid}))
         kb.add(Callback(f"❌ #{rid}", payload={"cmd": "review_reject", "id": rid}))
-    if len(pending) > 10:
-        lines.append(f"\n…и ещё {len(pending) - 10}")
-    kb.row()
-    kb.add(Callback("🔙 К отзывам", payload={"cmd": "admin_reviews"}))
-    kb.row()
-    kb.add(Callback("🔙 В админку", payload={"cmd": "admin_back"}))
+    _add_nav_row(kb, page, total_pages, "admin_pending", "🔙", "admin_reviews")
     await event.edit_message("\n".join(lines), keyboard=kb.get_json())
 
 
@@ -1842,7 +1863,7 @@ async def cmd_review_reject(event: MessageEvent, payload: dict):
 
 
 # ====================== АДМИН: ЦЕНЫ ======================
-async def cmd_admin_prices(event: MessageEvent):
+async def cmd_admin_prices(event: MessageEvent, payload: dict | None = None):
     if not is_admin(event.user_id):
         return
     prices = get_prices_dict()
@@ -1850,13 +1871,18 @@ async def cmd_admin_prices(event: MessageEvent):
     for t, p in prices.items():
         text += f"- {t}: {p}\n"
 
-    types_list = list(prices.keys())
+    types_list = list(enumerate(prices.keys()))
+    page = max(1, (payload or {}).get("p", 1))
+    chunk, page, total_pages = _paginate(types_list, page, PRICES_PER_PAGE)
+    if total_pages > 1:
+        text += f"\nСтр. {page}/{total_pages}"
+
     kb = Keyboard(inline=True)
-    for idx, t in enumerate(types_list):
-        kb.row()
-        kb.add(Callback(f"✏️ {t}", payload={"cmd": "price_edit", "i": idx}))
-    kb.row()
-    kb.add(Callback("🔙 В админку", payload={"cmd": "admin_back"}))
+    for i, (idx, t) in enumerate(chunk):
+        if i > 0:
+            kb.row()
+        kb.add(Callback(f"✏️ {t}"[:30], payload={"cmd": "price_edit", "i": idx}))
+    _add_nav_row(kb, page, total_pages, "admin_prices", "🔙", "admin_back")
     await event.edit_message(text, keyboard=kb.get_json())
 
 
