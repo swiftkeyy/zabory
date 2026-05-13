@@ -1991,12 +1991,24 @@ async def admin_export(call: CallbackQuery, state: FSMContext):
 # ====================== ЗАПУСК ======================
 async def main():
     init_db()
-    bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+
+    bot = Bot(
+        token=TOKEN,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+    )
+
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(router)
 
+    # удаляем webhook и старые апдейты
+    await bot.delete_webhook(drop_pending_updates=True)
+
     logger.info("🚀 Бот запущен успешно!")
-    await dp.start_polling(bot)
+
+    await dp.start_polling(
+        bot,
+        allowed_updates=dp.resolve_used_update_types()
+    )
 
 
 if __name__ == "__main__":
