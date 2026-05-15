@@ -232,6 +232,37 @@ def get_prices_dict():
     return prices
 
 
+def sync_prices_with_types():
+    """Синхронизирует таблицу цен с типами заборов (добавляет отсутствующие)"""
+    conn = _connect()
+    cur = conn.cursor()
+    
+    # Получаем все типы заборов
+    cur.execute("SELECT name FROM fence_types")
+    fence_types = [row[0] for row in cur.fetchall()]
+    
+    # Получаем существующие цены
+    cur.execute("SELECT fence_type FROM prices")
+    existing_prices = [row[0] for row in cur.fetchall()]
+    
+    # Добавляем отсутствующие цены
+    added = 0
+    for fence_type in fence_types:
+        if fence_type not in existing_prices:
+            cur.execute(
+                "INSERT OR IGNORE INTO prices (fence_type, price_per_m2) VALUES (?, ?)",
+                (fence_type, 0)
+            )
+            added += 1
+            logger.info(f"✅ Добавлена цена для типа: {fence_type}")
+    
+    if added > 0:
+        conn.commit()
+        logger.info(f"✅ Синхронизировано {added} цен с типами заборов")
+    
+    conn.close()
+
+
 def get_fence_types():
     conn = _connect()
     cur = conn.cursor()
@@ -1479,8 +1510,17 @@ async def type_add_desc(message: Message, state: FSMContext):
             "INSERT INTO fence_types (name, description, created_at) VALUES (?, ?, ?)",
             (name, desc, datetime.now().isoformat()),
         )
+        # Автоматически добавляем цену по умолчанию (0 руб)
+        cur.execute(
+            "INSERT OR IGNORE INTO prices (fence_type, price_per_m2) VALUES (?, ?)",
+            (name, 0)
+        )
         conn.commit()
-        await message.answer(f"✅ Тип «{name}» добавлен.", reply_markup=admin_back_kb())
+        await message.answer(
+            f"✅ Тип «{name}» добавлен.\n\n"
+            "💡 Не забудьте установить цену в разделе «💰 Управление ценами».",
+            reply_markup=admin_back_kb()
+        )
     except sqlite3.IntegrityError:
         await message.answer("⚠️ Тип с таким названием уже существует.", reply_markup=admin_back_kb())
     finally:
@@ -2100,6 +2140,7 @@ async def admin_export(call: CallbackQuery, state: FSMContext):
 # ====================== ЗАПУСК ======================
 async def main():
     init_db()
+    sync_prices_with_types()  # Синхронизируем цены с типами заборов
 
     bot = Bot(
         token=TOKEN,
