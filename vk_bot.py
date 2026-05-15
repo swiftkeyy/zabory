@@ -1094,10 +1094,17 @@ async def cmd_types(event: MessageEvent):
         return
 
     kb = Keyboard(inline=True)
-    for i, (tid, name, _desc) in enumerate(types):
+    # VK ограничивает максимум 10 строк, оставляем место для кнопки "Главное меню"
+    max_types = 9
+    for i, (tid, name, _desc) in enumerate(types[:max_types]):
         if i > 0:
             kb.row()
         kb.add(Callback(name, payload={"cmd": "ftype", "id": tid}))
+    
+    if len(types) > max_types:
+        kb.row()
+        kb.add(Callback(f"Ещё ({len(types) - max_types})", payload={"cmd": "types_more"}))
+    
     kb.row()
     kb.add(Callback("🏠 Главное меню", payload={"cmd": "main"}))
     await event.edit_message(
