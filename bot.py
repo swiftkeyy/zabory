@@ -22,6 +22,9 @@ from aiogram.types import (
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+# Импорт модуля для работы с БД
+from database import _connect, _placeholder, init_db, DB_TYPE
+
 # ====================== НАСТРОЙКИ ======================
 TOKEN = os.getenv("BOT_TOKEN", "8705623484:AAHuEOSwTpEa6VlXcHwOoxk9H-ao2ChmK7w")
 ADMINS_STR = os.getenv("ADMINS", "5118405789, 5635535380")
@@ -297,17 +300,22 @@ def reject_review(review_id: int):
 
 
 def get_works(offset: int, limit: int):
-    conn = _connect()
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM works")
-    total = cur.fetchone()[0]
-    cur.execute(
-        "SELECT id, file_id, caption FROM works ORDER BY id DESC LIMIT ? OFFSET ?",
-        (limit, offset),
-    )
-    rows = cur.fetchall()
-    conn.close()
-    return rows, total
+    """Получает работы для Telegram бота (использует общую таблицу)"""
+    from sync_manager import get_works_unified
+    
+    # Получаем все работы (и TG, и VK)
+    rows, total = get_works_unified(offset, limit)
+    
+    # Преобразуем формат для совместимости
+    # Формат: (id, file_id, caption)
+    result = []
+    for row in rows:
+        work_id, tg_file_id, vk_attachment, caption, platform, added_at = row
+        # Для TG бота показываем только работы с tg_file_id
+        if tg_file_id:
+            result.append((work_id, tg_file_id, caption))
+    
+    return result, len(result)
 
 
 def get_leads(offset: int, limit: int):
@@ -1217,19 +1225,44 @@ async def _save_work(bot: Bot, chat_id: int, state: FSMContext, caption: str):
         await state.clear()
         await bot.send_message(chat_id, "❌ Ошибка: фото потерялось. Начните заново.", reply_markup=admin_back_kb())
         return
-    conn = _connect()
-    cur = conn.cursor()
+    
+    # Импортируем sync_manager и photo_converter
+    from sync_manager import add_work
+    from photo_converter import sync_photo_tg_to_vk
+    
     try:
-        cur.execute(
-            "INSERT INTO works (file_id, caption, added_at) VALUES (?, ?, ?)",
-            (file_id, caption, datetime.now().isoformat()),
+        # Синхронизируем фото в VK (если настроен VK бот)
+        vk_attachment = None
+        vk_token = os.getenv("VK_BOT_TOKEN")
+        vk_admins_str = os.getenv("VK_ADMINS", "")
+        
+        if vk_token and vk_admins_str:
+            vk_admin_ids = [int(x.strip()) for x in vk_admins_str.split(",") if x.strip()]
+            if vk_admin_ids:
+                vk_admin_id = vk_admin_ids[0]  # Используем первого админа
+                logger.info(f"🔄 Синхронизация фото в VK...")
+                vk_attachment = sync_photo_tg_to_vk(TOKEN, vk_token, file_id, vk_admin_id)
+                if vk_attachment:
+                    logger.info(f"✅ Фото синхронизировано в VK: {vk_attachment}")
+                else:
+                    logger.warning("⚠️ Не удалось синхронизировать фото в VK")
+        
+        # Добавляем работу в общую таблицу
+        work_id = add_work(
+            file_id=file_id,
+            vk_attachment=vk_attachment,
+            caption=caption,
+            platform="tg"
         )
-        conn.commit()
-        msg = "✅ Фото добавлено в галерею."
-    except sqlite3.IntegrityError:
-        msg = "⚠️ Это фото уже было добавлено."
-    finally:
-        conn.close()
+        
+        if vk_attachment:
+            msg = f"✅ Фото добавлено в галерею и синхронизировано с VK (ID: {work_id})."
+        else:
+            msg = f"✅ Фото добавлено в галерею (ID: {work_id})."
+    except Exception as e:
+        logger.error(f"Ошибка добавления работы: {e}")
+        msg = "⚠️ Ошибка при добавлении фото."
+    
     await state.clear()
     await bot.send_message(chat_id, msg, reply_markup=admin_back_kb())
 

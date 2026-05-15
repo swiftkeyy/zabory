@@ -299,17 +299,22 @@ def get_pending_reviews():
 
 
 def get_vk_works(offset: int, limit: int):
-    conn = _connect()
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM vk_works")
-    total = cur.fetchone()[0]
-    cur.execute(
-        "SELECT id, attachment, caption FROM vk_works ORDER BY id DESC LIMIT ? OFFSET ?",
-        (limit, offset),
-    )
-    rows = cur.fetchall()
-    conn.close()
-    return rows, total
+    """Получает работы для VK бота (использует общую таблицу)"""
+    from sync_manager import get_works_unified
+    
+    # Получаем все работы (и TG, и VK)
+    rows, total = get_works_unified(offset, limit)
+    
+    # Преобразуем формат для совместимости
+    # Формат: (id, attachment, caption)
+    result = []
+    for row in rows:
+        work_id, tg_file_id, vk_attachment, caption, platform, added_at = row
+        # Для VK бота показываем только работы с vk_attachment
+        if vk_attachment:
+            result.append((work_id, vk_attachment, caption))
+    
+    return result, len(result)
 
 
 def get_leads(offset: int, limit: int):
@@ -741,19 +746,23 @@ async def _save_vk_work(peer_id: int, attachment: str, caption: str):
             random_id=0,
         )
         return
-    conn = _connect()
-    cur = conn.cursor()
+    
+    # Импортируем sync_manager
+    from sync_manager import add_work
+    
     try:
-        cur.execute(
-            "INSERT INTO vk_works (attachment, caption, added_at) VALUES (?, ?, ?)",
-            (attachment, caption, datetime.now().isoformat()),
+        # Добавляем работу в общую таблицу
+        work_id = add_work(
+            file_id=None,  # VK не использует file_id
+            vk_attachment=attachment,
+            caption=caption,
+            platform="vk"
         )
-        conn.commit()
-        msg = "✅ Фото добавлено в галерею."
-    except sqlite3.IntegrityError:
-        msg = "⚠️ Это фото уже было добавлено."
-    finally:
-        conn.close()
+        msg = f"✅ Фото добавлено в галерею (ID: {work_id})."
+    except Exception as e:
+        logger.error(f"Ошибка добавления работы: {e}")
+        msg = "⚠️ Ошибка при добавлении фото."
+    
     await _clear_state(peer_id)
     await bot.api.messages.send(peer_id=peer_id, message=msg, keyboard=admin_back_kb(), random_id=0)
 
