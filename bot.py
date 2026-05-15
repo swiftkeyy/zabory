@@ -1194,7 +1194,14 @@ async def work_add(call: CallbackQuery, state: FSMContext):
         await call.answer()
         return
     await state.set_state(AddWorkStates.photo)
-    await safe_edit(call, "📸 Пришлите фото для добавления в галерею:", reply_markup=admin_back_kb())
+    await state.update_data(photos=[])  # Инициализируем список фото
+    await safe_edit(
+        call, 
+        "📸 <b>Добавление фото в галерею</b>\n\n"
+        "Отправьте одно или несколько фото.\n"
+        "Когда закончите, нажмите кнопку ниже.",
+        reply_markup=admin_back_kb()
+    )
     await call.answer()
 
 
@@ -1202,13 +1209,53 @@ async def work_add(call: CallbackQuery, state: FSMContext):
 async def work_add_photo(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
+    
+    # Получаем текущий список фото
+    data = await state.get_data()
+    photos = data.get("photos", [])
+    
+    # Добавляем новое фото
     file_id = message.photo[-1].file_id
-    await state.update_data(file_id=file_id)
+    photos.append(file_id)
+    
+    await state.update_data(photos=photos)
+    
+    # Показываем кнопки для продолжения или завершения
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text=f"✅ Готово ({len(photos)} фото)", callback_data="work_photos_done"))
+    b.row(InlineKeyboardButton(text="❌ Отмена", callback_data="admin_back"))
+    
+    await message.answer(
+        f"📸 Фото {len(photos)} добавлено.\n\n"
+        "Отправьте ещё фото или нажмите «Готово».",
+        reply_markup=b.as_markup()
+    )
+
+
+@router.callback_query(F.data == "work_photos_done", AddWorkStates.photo)
+async def work_photos_done(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        await call.answer()
+        return
+    
+    data = await state.get_data()
+    photos = data.get("photos", [])
+    
+    if not photos:
+        await call.answer("❌ Вы не добавили ни одного фото", show_alert=True)
+        return
+    
     await state.set_state(AddWorkStates.caption)
     b = InlineKeyboardBuilder()
     b.row(InlineKeyboardButton(text="➡️ Без подписи", callback_data="work_skip_caption"))
     b.row(InlineKeyboardButton(text="❌ Отмена", callback_data="admin_back"))
-    await message.answer("Введите подпись к фото (или пропустите):", reply_markup=b.as_markup())
+    
+    await call.message.edit_text(
+        f"📝 Добавлено {len(photos)} фото.\n\n"
+        "Введите общую подпись для всех фото (или пропустите):",
+        reply_markup=b.as_markup()
+    )
+    await call.answer()
 
 
 @router.message(AddWorkStates.photo)
@@ -1220,51 +1267,80 @@ async def work_add_photo_invalid(message: Message):
 
 async def _save_work(bot: Bot, chat_id: int, state: FSMContext, caption: str):
     data = await state.get_data()
-    file_id = data.get("file_id")
-    if not file_id:
+    photos = data.get("photos", [])
+    
+    if not photos:
         await state.clear()
-        await bot.send_message(chat_id, "❌ Ошибка: фото потерялось. Начните заново.", reply_markup=admin_back_kb())
+        await bot.send_message(chat_id, "❌ Ошибка: фото потерялись. Начните заново.", reply_markup=admin_back_kb())
         return
     
     # Импортируем sync_manager и photo_converter
     from sync_manager import add_work
     from photo_converter import sync_photo_tg_to_vk
     
-    try:
-        # Синхронизируем фото в VK (если настроен VK бот)
-        vk_attachment = None
-        vk_token = os.getenv("VK_BOT_TOKEN")
-        vk_admins_str = os.getenv("VK_ADMINS", "")
-        
-        if vk_token and vk_admins_str:
-            vk_admin_ids = [int(x.strip()) for x in vk_admins_str.split(",") if x.strip()]
-            if vk_admin_ids:
-                vk_admin_id = vk_admin_ids[0]  # Используем первого админа
-                logger.info(f"🔄 Синхронизация фото в VK...")
+    # Получаем настройки VK
+    vk_token = os.getenv("VK_BOT_TOKEN")
+    vk_admins_str = os.getenv("VK_ADMINS", "")
+    vk_admin_id = None
+    
+    if vk_token and vk_admins_str:
+        vk_admin_ids = [int(x.strip()) for x in vk_admins_str.split(",") if x.strip()]
+        if vk_admin_ids:
+            vk_admin_id = vk_admin_ids[0]
+    
+    # Сохраняем все фото
+    saved_count = 0
+    synced_count = 0
+    
+    status_msg = await bot.send_message(
+        chat_id,
+        f"⏳ Сохранение {len(photos)} фото...",
+        reply_markup=admin_back_kb()
+    )
+    
+    for idx, file_id in enumerate(photos, 1):
+        try:
+            # Синхронизируем фото в VK (если настроен)
+            vk_attachment = None
+            if vk_admin_id and vk_token:
+                logger.info(f"🔄 Синхронизация фото {idx}/{len(photos)} в VK...")
                 vk_attachment = sync_photo_tg_to_vk(TOKEN, vk_token, file_id, vk_admin_id)
                 if vk_attachment:
-                    logger.info(f"✅ Фото синхронизировано в VK: {vk_attachment}")
+                    logger.info(f"✅ Фото {idx} синхронизировано в VK: {vk_attachment}")
+                    synced_count += 1
                 else:
-                    logger.warning("⚠️ Не удалось синхронизировать фото в VK")
+                    logger.warning(f"⚠️ Не удалось синхронизировать фото {idx} в VK")
+            
+            # Добавляем работу в общую таблицу
+            work_id = add_work(
+                file_id=file_id,
+                vk_attachment=vk_attachment,
+                caption=caption,
+                platform="tg"
+            )
+            saved_count += 1
+            
+            # Обновляем статус
+            if idx % 3 == 0 or idx == len(photos):  # Обновляем каждые 3 фото или в конце
+                await status_msg.edit_text(
+                    f"⏳ Сохранено {saved_count}/{len(photos)} фото...",
+                    reply_markup=admin_back_kb()
+                )
         
-        # Добавляем работу в общую таблицу
-        work_id = add_work(
-            file_id=file_id,
-            vk_attachment=vk_attachment,
-            caption=caption,
-            platform="tg"
-        )
-        
-        if vk_attachment:
-            msg = f"✅ Фото добавлено в галерею и синхронизировано с VK (ID: {work_id})."
-        else:
-            msg = f"✅ Фото добавлено в галерею (ID: {work_id})."
-    except Exception as e:
-        logger.error(f"Ошибка добавления работы: {e}")
-        msg = "⚠️ Ошибка при добавлении фото."
+        except Exception as e:
+            logger.error(f"Ошибка добавления фото {idx}: {e}")
     
+    # Итоговое сообщение
+    if saved_count == len(photos):
+        if synced_count > 0:
+            msg = f"✅ Все {saved_count} фото добавлены в галерею и синхронизированы с VK!"
+        else:
+            msg = f"✅ Все {saved_count} фото добавлены в галерею!"
+    else:
+        msg = f"⚠️ Добавлено {saved_count} из {len(photos)} фото."
+    
+    await status_msg.edit_text(msg, reply_markup=admin_back_kb())
     await state.clear()
-    await bot.send_message(chat_id, msg, reply_markup=admin_back_kb())
 
 
 @router.message(AddWorkStates.caption)

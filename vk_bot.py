@@ -704,26 +704,43 @@ async def work_photo_handler(message: Message):
     if not message.attachments:
         await message.answer("❌ Пришлите фото.")
         return
-    photo = None
+    
+    # Получаем текущий список фото
+    data = message.state_peer.payload or {}
+    photos = data.get("photos", [])
+    
+    # Обрабатываем все фото из сообщения
+    added_count = 0
     for att in message.attachments:
         if att.photo:
             photo = att.photo
-            break
-    if not photo:
+            attachment = f"photo{photo.owner_id}_{photo.id}"
+            if photo.access_key:
+                attachment += f"_{photo.access_key}"
+            photos.append(attachment)
+            added_count += 1
+    
+    if added_count == 0:
         await message.answer("❌ Это не фото. Пришлите изображение.")
         return
-    attachment = f"photo{photo.owner_id}_{photo.id}"
-    if photo.access_key:
-        attachment += f"_{photo.access_key}"
-    await bot.state_dispenser.set(message.peer_id, AddWorkStates.CAPTION, attachment=attachment)
+    
+    # Сохраняем обновленный список
+    await bot.state_dispenser.set(message.peer_id, AddWorkStates.PHOTO, photos=photos)
+    
+    # Показываем кнопки для продолжения или завершения
     kb = (
         Keyboard(inline=True)
-        .add(Callback("➡️ Без подписи", payload={"cmd": "work_skip_caption"}))
+        .add(Callback(f"✅ Готово ({len(photos)} фото)", payload={"cmd": "work_photos_done"}))
         .row()
         .add(Callback("❌ Отмена", payload={"cmd": "admin_back"}))
         .get_json()
     )
-    await message.answer("Введите подпись к фото (или пропустите):", keyboard=kb)
+    
+    await message.answer(
+        f"📸 Добавлено {added_count} фото (всего: {len(photos)}).\n\n"
+        "Отправьте ещё фото или нажмите «Готово».",
+        keyboard=kb
+    )
 
 
 @bot.on.private_message(state=AddWorkStates.CAPTION)
@@ -731,17 +748,17 @@ async def work_caption_handler(message: Message):
     if not is_admin(message.from_id):
         return
     data = message.state_peer.payload or {}
-    attachment = data.get("attachment")
+    photos = data.get("photos", [])
     caption = (message.text or "").strip()[:500]
-    await _save_vk_work(message.peer_id, attachment, caption)
+    await _save_vk_works(message.peer_id, photos, caption)
 
 
-async def _save_vk_work(peer_id: int, attachment: str, caption: str):
-    if not attachment:
+async def _save_vk_works(peer_id: int, photos: list, caption: str):
+    if not photos:
         await _clear_state(peer_id)
         await bot.api.messages.send(
             peer_id=peer_id,
-            message="❌ Ошибка: фото потерялось. Начните заново.",
+            message="❌ Ошибка: фото потерялись. Начните заново.",
             keyboard=admin_back_kb(),
             random_id=0,
         )
@@ -750,18 +767,35 @@ async def _save_vk_work(peer_id: int, attachment: str, caption: str):
     # Импортируем sync_manager
     from sync_manager import add_work
     
-    try:
-        # Добавляем работу в общую таблицу
-        work_id = add_work(
-            file_id=None,  # VK не использует file_id
-            vk_attachment=attachment,
-            caption=caption,
-            platform="vk"
-        )
-        msg = f"✅ Фото добавлено в галерею (ID: {work_id})."
-    except Exception as e:
-        logger.error(f"Ошибка добавления работы: {e}")
-        msg = "⚠️ Ошибка при добавлении фото."
+    # Сохраняем все фото
+    saved_count = 0
+    
+    # Отправляем статус
+    await bot.api.messages.send(
+        peer_id=peer_id,
+        message=f"⏳ Сохранение {len(photos)} фото...",
+        keyboard=admin_back_kb(),
+        random_id=0
+    )
+    
+    for idx, attachment in enumerate(photos, 1):
+        try:
+            # Добавляем работу в общую таблицу
+            work_id = add_work(
+                file_id=None,  # VK не использует file_id
+                vk_attachment=attachment,
+                caption=caption,
+                platform="vk"
+            )
+            saved_count += 1
+        except Exception as e:
+            logger.error(f"Ошибка добавления фото {idx}: {e}")
+    
+    # Итоговое сообщение
+    if saved_count == len(photos):
+        msg = f"✅ Все {saved_count} фото добавлены в галерею!"
+    else:
+        msg = f"⚠️ Добавлено {saved_count} из {len(photos)} фото."
     
     await _clear_state(peer_id)
     await bot.api.messages.send(peer_id=peer_id, message=msg, keyboard=admin_back_kb(), random_id=0)
@@ -1049,6 +1083,8 @@ async def handle_callback(event: MessageEvent):
         await cmd_admin_works(event)
     elif cmd == "work_add":
         await cmd_work_add(event)
+    elif cmd == "work_photos_done":
+        await cmd_work_photos_done(event)
     elif cmd == "work_list":
         await cmd_work_list(event, payload)
     elif cmd == "work_del":
@@ -1479,8 +1515,42 @@ async def cmd_admin_works(event: MessageEvent):
 async def cmd_work_add(event: MessageEvent):
     if not is_admin(event.user_id):
         return
-    await bot.state_dispenser.set(event.peer_id, AddWorkStates.PHOTO)
-    await event.edit_message("📸 Пришлите фото для добавления в галерею:", keyboard=admin_back_kb())
+    await bot.state_dispenser.set(event.peer_id, AddWorkStates.PHOTO, photos=[])
+    await event.edit_message(
+        "📸 ДОБАВЛЕНИЕ ФОТО В ГАЛЕРЕЮ\n\n"
+        "Отправьте одно или несколько фото.\n"
+        "Когда закончите, нажмите кнопку ниже.",
+        keyboard=admin_back_kb()
+    )
+
+
+async def cmd_work_photos_done(event: MessageEvent):
+    if not is_admin(event.user_id):
+        return
+    state = await bot.state_dispenser.get(event.peer_id)
+    if not state:
+        return
+    data = state.payload or {}
+    photos = data.get("photos", [])
+    
+    if not photos:
+        await event.show_snackbar("❌ Вы не добавили ни одного фото")
+        return
+    
+    await bot.state_dispenser.set(event.peer_id, AddWorkStates.CAPTION, photos=photos)
+    kb = (
+        Keyboard(inline=True)
+        .add(Callback("➡️ Без подписи", payload={"cmd": "work_skip_caption"}))
+        .row()
+        .add(Callback("❌ Отмена", payload={"cmd": "admin_back"}))
+        .get_json()
+    )
+    
+    await event.edit_message(
+        f"📝 Добавлено {len(photos)} фото.\n\n"
+        "Введите общую подпись для всех фото (или пропустите):",
+        keyboard=kb
+    )
 
 
 async def cmd_work_list(event: MessageEvent, payload: dict):
@@ -1537,8 +1607,8 @@ async def cmd_work_skip_caption(event: MessageEvent):
     if not state:
         return
     data = state.payload or {}
-    attachment = data.get("attachment")
-    await _save_vk_work(event.peer_id, attachment, "")
+    photos = data.get("photos", [])
+    await _save_vk_works(event.peer_id, photos, "")
 
 
 # ====================== АДМИН: ВИДЫ ЗАБОРОВ ======================
