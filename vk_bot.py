@@ -107,7 +107,8 @@ def get_fence_types():
 def get_fence_type(type_id: int):
     conn = _connect()
     cur = conn.cursor()
-    cur.execute("SELECT id, name, description FROM fence_types WHERE id = ?", (type_id,))
+    ph = _placeholder()
+    cur.execute(f"SELECT id, name, description FROM fence_types WHERE id = {ph}", (type_id,))
     row = cur.fetchone()
     conn.close()
     return row
@@ -116,10 +117,11 @@ def get_fence_type(type_id: int):
 def get_reviews(offset: int, limit: int):
     conn = _connect()
     cur = conn.cursor()
+    ph = _placeholder()
     cur.execute("SELECT COUNT(*) FROM reviews WHERE approved = 1")
     total = cur.fetchone()[0]
     cur.execute(
-        "SELECT id, author, text FROM reviews WHERE approved = 1 ORDER BY id DESC LIMIT ? OFFSET ?",
+        f"SELECT id, author, text FROM reviews WHERE approved = 1 ORDER BY id DESC LIMIT {ph} OFFSET {ph}",
         (limit, offset),
     )
     rows = cur.fetchall()
@@ -677,7 +679,8 @@ async def price_edit_handler(message: Message):
     fence_type = data.get("fence_type", "")
     conn = _connect()
     cur = conn.cursor()
-    cur.execute("UPDATE prices SET price_per_m2 = ? WHERE fence_type = ?", (new_price, fence_type))
+    ph = _placeholder()
+    cur.execute(f"UPDATE prices SET price_per_m2 = {ph} WHERE fence_type = {ph}", (new_price, fence_type))
     conn.commit()
     conn.close()
     await _clear_state(message.peer_id)
@@ -755,12 +758,16 @@ async def type_rename_handler(message: Message):
     tid = data.get("type_id")
     conn = _connect()
     cur = conn.cursor()
+    ph = _placeholder()
     try:
-        cur.execute("UPDATE fence_types SET name = ? WHERE id = ?", (name, tid))
+        cur.execute(f"UPDATE fence_types SET name = {ph} WHERE id = {ph}", (name, tid))
         conn.commit()
         await message.answer("✅ Название обновлено.", keyboard=admin_back_kb())
-    except sqlite3.IntegrityError:
-        await message.answer("⚠️ Такое название уже занято.", keyboard=admin_back_kb())
+    except Exception as e:
+        if "unique" in str(e).lower() or "duplicate" in str(e).lower():
+            await message.answer("⚠️ Такое название уже занято.", keyboard=admin_back_kb())
+        else:
+            raise
     finally:
         conn.close()
     await _clear_state(message.peer_id)
@@ -779,7 +786,8 @@ async def type_redesc_handler(message: Message):
     tid = data.get("type_id")
     conn = _connect()
     cur = conn.cursor()
-    cur.execute("UPDATE fence_types SET description = ? WHERE id = ?", (desc, tid))
+    ph = _placeholder()
+    cur.execute(f"UPDATE fence_types SET description = {ph} WHERE id = {ph}", (desc, tid))
     conn.commit()
     conn.close()
     await _clear_state(message.peer_id)
@@ -1364,7 +1372,8 @@ async def cmd_lead_status(event: MessageEvent, payload: dict):
     new_status = LEAD_STATUSES[sidx]
     conn = _connect()
     cur = conn.cursor()
-    cur.execute("UPDATE leads SET status = ? WHERE id = ?", (new_status, lid))
+    ph = _placeholder()
+    cur.execute(f"UPDATE leads SET status = {ph} WHERE id = {ph}", (new_status, lid))
     conn.commit()
     conn.close()
     await event.show_snackbar(f"Статус → {new_status}")
@@ -1476,7 +1485,8 @@ async def cmd_work_del(event: MessageEvent, payload: dict):
     wid = payload.get("id")
     conn = _connect()
     cur = conn.cursor()
-    cur.execute("DELETE FROM vk_works WHERE id = ?", (wid,))
+    ph = _placeholder()
+    cur.execute(f"DELETE FROM vk_works WHERE id = {ph}", (wid,))
     conn.commit()
     conn.close()
     await event.show_snackbar("Удалено")
@@ -1606,7 +1616,8 @@ async def cmd_type_del(event: MessageEvent, payload: dict):
     tid = payload.get("id")
     conn = _connect()
     cur = conn.cursor()
-    cur.execute("DELETE FROM fence_types WHERE id = ?", (tid,))
+    ph = _placeholder()
+    cur.execute(f"DELETE FROM fence_types WHERE id = {ph}", (tid,))
     conn.commit()
     conn.close()
     await event.show_snackbar("Удалено")
@@ -1655,7 +1666,8 @@ async def cmd_review_del(event: MessageEvent, payload: dict):
     rid = payload.get("id")
     conn = _connect()
     cur = conn.cursor()
-    cur.execute("DELETE FROM reviews WHERE id = ?", (rid,))
+    ph = _placeholder()
+    cur.execute(f"DELETE FROM reviews WHERE id = {ph}", (rid,))
     conn.commit()
     conn.close()
     await event.show_snackbar("Удалено")
@@ -1735,14 +1747,15 @@ async def cmd_review_approve(event: MessageEvent, payload: dict):
     rid = payload.get("id")
     conn = _connect()
     cur = conn.cursor()
-    cur.execute("SELECT author, user_id FROM reviews WHERE id = ? AND approved = 0", (rid,))
+    ph = _placeholder()
+    cur.execute(f"SELECT author, user_id FROM reviews WHERE id = {ph} AND approved = 0", (rid,))
     row = cur.fetchone()
     if not row:
         conn.close()
         await event.show_snackbar("Отзыв уже одобрен или не найден")
         return
     author, user_id = row
-    cur.execute("UPDATE reviews SET approved = 1 WHERE id = ?", (rid,))
+    cur.execute(f"UPDATE reviews SET approved = 1 WHERE id = {ph}", (rid,))
     conn.commit()
     conn.close()
     await event.show_snackbar(f"Отзыв #{rid} одобрен!")
@@ -1772,14 +1785,15 @@ async def cmd_review_reject(event: MessageEvent, payload: dict):
     rid = payload.get("id")
     conn = _connect()
     cur = conn.cursor()
-    cur.execute("SELECT author, user_id FROM reviews WHERE id = ? AND approved = 0", (rid,))
+    ph = _placeholder()
+    cur.execute(f"SELECT author, user_id FROM reviews WHERE id = {ph} AND approved = 0", (rid,))
     row = cur.fetchone()
     if not row:
         conn.close()
         await event.show_snackbar("Отзыв уже обработан или не найден")
         return
     author, user_id = row
-    cur.execute("DELETE FROM reviews WHERE id = ?", (rid,))
+    cur.execute(f"DELETE FROM reviews WHERE id = {ph}", (rid,))
     conn.commit()
     conn.close()
     await event.show_snackbar(f"Отзыв #{rid} отклонён")
