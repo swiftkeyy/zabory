@@ -59,6 +59,7 @@ def sync_prices_with_types():
     """Синхронизирует таблицу цен с типами заборов (добавляет отсутствующие)"""
     conn = _connect()
     cur = conn.cursor()
+    ph = _placeholder()
     
     # Получаем все типы заборов
     cur.execute("SELECT name FROM fence_types")
@@ -72,10 +73,16 @@ def sync_prices_with_types():
     added = 0
     for fence_type in fence_types:
         if fence_type not in existing_prices:
-            cur.execute(
-                "INSERT OR IGNORE INTO prices (fence_type, price_per_m2) VALUES (?, ?)",
-                (fence_type, 0)
-            )
+            if DB_TYPE == "postgresql":
+                cur.execute(
+                    f"INSERT INTO prices (fence_type, price_per_m2) VALUES ({ph}, {ph}) ON CONFLICT DO NOTHING",
+                    (fence_type, 0)
+                )
+            else:
+                cur.execute(
+                    f"INSERT OR IGNORE INTO prices (fence_type, price_per_m2) VALUES ({ph}, {ph})",
+                    (fence_type, 0)
+                )
             added += 1
             logger.info(f"✅ Добавлена цена для типа: {fence_type}")
     
@@ -321,15 +328,29 @@ async def start(message: Message, state: FSMContext):
     await state.clear()
     conn = _connect()
     cur = conn.cursor()
-    cur.execute(
-        "INSERT OR IGNORE INTO users VALUES (?,?,?,?)",
-        (
-            message.from_user.id,
-            message.from_user.username,
-            message.from_user.full_name,
-            datetime.now().isoformat(),
-        ),
-    )
+    ph = _placeholder()
+    
+    if DB_TYPE == "postgresql":
+        cur.execute(
+            f"INSERT INTO users (user_id, username, full_name, created_at) "
+            f"VALUES ({ph}, {ph}, {ph}, {ph}) ON CONFLICT DO NOTHING",
+            (
+                message.from_user.id,
+                message.from_user.username,
+                message.from_user.full_name,
+                datetime.now().isoformat(),
+            ),
+        )
+    else:
+        cur.execute(
+            f"INSERT OR IGNORE INTO users VALUES ({ph},{ph},{ph},{ph})",
+            (
+                message.from_user.id,
+                message.from_user.username,
+                message.from_user.full_name,
+                datetime.now().isoformat(),
+            ),
+        )
     conn.commit()
     conn.close()
 
@@ -1328,24 +1349,34 @@ async def type_add_desc(message: Message, state: FSMContext):
     name = data["name"]
     conn = _connect()
     cur = conn.cursor()
+    ph = _placeholder()
     try:
         cur.execute(
-            "INSERT INTO fence_types (name, description, created_at) VALUES (?, ?, ?)",
+            f"INSERT INTO fence_types (name, description, created_at) VALUES ({ph}, {ph}, {ph})",
             (name, desc, datetime.now().isoformat()),
         )
         # Автоматически добавляем цену по умолчанию (0 руб)
-        cur.execute(
-            "INSERT OR IGNORE INTO prices (fence_type, price_per_m2) VALUES (?, ?)",
-            (name, 0)
-        )
+        if DB_TYPE == "postgresql":
+            cur.execute(
+                f"INSERT INTO prices (fence_type, price_per_m2) VALUES ({ph}, {ph}) ON CONFLICT DO NOTHING",
+                (name, 0)
+            )
+        else:
+            cur.execute(
+                f"INSERT OR IGNORE INTO prices (fence_type, price_per_m2) VALUES ({ph}, {ph})",
+                (name, 0)
+            )
         conn.commit()
         await message.answer(
             f"✅ Тип «{name}» добавлен.\n\n"
             "💡 Не забудьте установить цену в разделе «💰 Управление ценами».",
             reply_markup=admin_back_kb()
         )
-    except sqlite3.IntegrityError:
-        await message.answer("⚠️ Тип с таким названием уже существует.", reply_markup=admin_back_kb())
+    except Exception as e:
+        if "unique" in str(e).lower() or "duplicate" in str(e).lower():
+            await message.answer("⚠️ Тип с таким названием уже существует.", reply_markup=admin_back_kb())
+        else:
+            raise
     finally:
         conn.close()
     await state.clear()

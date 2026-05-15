@@ -61,6 +61,7 @@ def sync_prices_with_types():
     """Синхронизирует таблицу цен с типами заборов (добавляет отсутствующие)"""
     conn = _connect()
     cur = conn.cursor()
+    ph = _placeholder()
     
     # Получаем все типы заборов
     cur.execute("SELECT name FROM fence_types")
@@ -74,10 +75,16 @@ def sync_prices_with_types():
     added = 0
     for fence_type in fence_types:
         if fence_type not in existing_prices:
-            cur.execute(
-                "INSERT OR IGNORE INTO prices (fence_type, price_per_m2) VALUES (?, ?)",
-                (fence_type, 0)
-            )
+            if DB_TYPE == "postgresql":
+                cur.execute(
+                    f"INSERT INTO prices (fence_type, price_per_m2) VALUES ({ph}, {ph}) ON CONFLICT DO NOTHING",
+                    (fence_type, 0)
+                )
+            else:
+                cur.execute(
+                    f"INSERT OR IGNORE INTO prices (fence_type, price_per_m2) VALUES ({ph}, {ph})",
+                    (fence_type, 0)
+                )
             added += 1
             logger.info(f"✅ Добавлена цена для типа: {fence_type}")
     
@@ -340,33 +347,53 @@ async def start_payload(message: Message):
     await _clear_state(message.peer_id)
     conn = _connect()
     cur = conn.cursor()
+    ph = _placeholder()
     user_info = await bot.api.users.get(user_ids=[message.from_id])
     first = user_info[0].first_name if user_info else ""
     last = user_info[0].last_name if user_info else ""
-    cur.execute(
-        "INSERT OR REPLACE INTO vk_users VALUES (?,?,?,?)",
-        (message.from_id, first, last, datetime.now().isoformat()),
-    )
+    
+    if DB_TYPE == "postgresql":
+        cur.execute(
+            f"INSERT INTO vk_users (user_id, first_name, last_name, created_at) "
+            f"VALUES ({ph}, {ph}, {ph}, {ph}) "
+            f"ON CONFLICT (user_id) DO UPDATE SET first_name = EXCLUDED.first_name, last_name = EXCLUDED.last_name",
+            (message.from_id, first, last, datetime.now().isoformat()),
+        )
+    else:
+        cur.execute(
+            f"INSERT OR REPLACE INTO vk_users VALUES ({ph},{ph},{ph},{ph})",
+            (message.from_id, first, last, datetime.now().isoformat()),
+        )
     conn.commit()
     conn.close()
     await message.answer(MAIN_TEXT, keyboard=main_menu_kb())
 
 
-@bot.on.private_message(text=["начать", "Начать", "/start", "start", "меню", "Меню"])
-async def start_text(message: Message):
-    await _clear_state(message.peer_id)
-    conn = _connect()
+# --- Админ ---
     cur = conn.cursor()
+    ph = _placeholder()
     user_info = await bot.api.users.get(user_ids=[message.from_id])
     first = user_info[0].first_name if user_info else ""
     last = user_info[0].last_name if user_info else ""
-    cur.execute(
-        "INSERT OR REPLACE INTO vk_users VALUES (?,?,?,?)",
-        (message.from_id, first, last, datetime.now().isoformat()),
-    )
+    
+    if DB_TYPE == "postgresql":
+        cur.execute(
+            f"INSERT INTO vk_users (user_id, first_name, last_name, created_at) "
+            f"VALUES ({ph}, {ph}, {ph}, {ph}) "
+            f"ON CONFLICT (user_id) DO UPDATE SET first_name = EXCLUDED.first_name, last_name = EXCLUDED.last_name",
+            (message.from_id, first, last, datetime.now().isoformat()),
+        )
+    else:
+        cur.execute(
+            f"INSERT OR REPLACE INTO vk_users VALUES ({ph},{ph},{ph},{ph})",
+            (message.from_id, first, last, datetime.now().isoformat()),
+        )
     conn.commit()
     conn.close()
     await message.answer(MAIN_TEXT, keyboard=main_menu_kb())
+
+
+# --- Админ ---
 
 
 # --- Админ ---
@@ -685,16 +712,23 @@ async def type_add_desc_handler(message: Message):
     name = data.get("type_name", "")
     conn = _connect()
     cur = conn.cursor()
+    ph = _placeholder()
     try:
         cur.execute(
-            "INSERT INTO fence_types (name, description, created_at) VALUES (?, ?, ?)",
+            f"INSERT INTO fence_types (name, description, created_at) VALUES ({ph}, {ph}, {ph})",
             (name, desc, datetime.now().isoformat()),
         )
         # Автоматически добавляем цену по умолчанию (0 руб)
-        cur.execute(
-            "INSERT OR IGNORE INTO prices (fence_type, price_per_m2) VALUES (?, ?)",
-            (name, 0)
-        )
+        if DB_TYPE == "postgresql":
+            cur.execute(
+                f"INSERT INTO prices (fence_type, price_per_m2) VALUES ({ph}, {ph}) ON CONFLICT DO NOTHING",
+                (name, 0)
+            )
+        else:
+            cur.execute(
+                f"INSERT OR IGNORE INTO prices (fence_type, price_per_m2) VALUES ({ph}, {ph})",
+                (name, 0)
+            )
         conn.commit()
         await message.answer(
             f"✅ Тип «{name}» добавлен.\n\n"
@@ -1951,6 +1985,7 @@ async def cmd_admin_export(event: MessageEvent):
 async def default_handler(message: Message):
     conn = _connect()
     cur = conn.cursor()
+    ph = _placeholder()
     try:
         user_info = await bot.api.users.get(user_ids=[message.from_id])
         first = user_info[0].first_name if user_info else ""
@@ -1958,10 +1993,19 @@ async def default_handler(message: Message):
     except Exception:
         first = ""
         last = ""
-    cur.execute(
-        "INSERT OR REPLACE INTO vk_users VALUES (?,?,?,?)",
-        (message.from_id, first, last, datetime.now().isoformat()),
-    )
+    
+    if DB_TYPE == "postgresql":
+        cur.execute(
+            f"INSERT INTO vk_users (user_id, first_name, last_name, created_at) "
+            f"VALUES ({ph}, {ph}, {ph}, {ph}) "
+            f"ON CONFLICT (user_id) DO UPDATE SET first_name = EXCLUDED.first_name, last_name = EXCLUDED.last_name",
+            (message.from_id, first, last, datetime.now().isoformat()),
+        )
+    else:
+        cur.execute(
+            f"INSERT OR REPLACE INTO vk_users VALUES ({ph},{ph},{ph},{ph})",
+            (message.from_id, first, last, datetime.now().isoformat()),
+        )
     conn.commit()
     conn.close()
     await message.answer(MAIN_TEXT, keyboard=main_menu_kb())
