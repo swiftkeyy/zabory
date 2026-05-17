@@ -466,8 +466,8 @@ async def _show_calc_type_page(message_or_event, page: int):
     height = data.get("height", 0)
     prices = get_prices_dict()
     
-    # VK ограничивает 10 строк: 7 типов + навигация + отмена = 9 строк
-    types_per_page = 7
+    # VK ограничивает 10 строк: 5 типов + навигация + отмена = 7 строк (безопасно)
+    types_per_page = 5
     total = len(types_list)
     total_pages = (total + types_per_page - 1) // types_per_page if total > 0 else 1
     page = max(1, min(page, total_pages))
