@@ -1629,8 +1629,8 @@ async def cmd_admin_types(event: MessageEvent, payload: dict = None):
     page = max(1, payload.get("p", 1))
     types = get_fence_types()
 
-    # VK ограничивает 10 строк: кнопка "Добавить" + 6 типов + навигация + админка = 9 строк
-    types_per_page = 6
+    # VK ограничивает 10 строк: кнопка "Добавить" + 3 типа + навигация + админка = 6 строк (безопасно)
+    types_per_page = 3
     total = len(types)
     total_pages = (total + types_per_page - 1) // types_per_page if total > 0 else 1
     page = min(page, total_pages)
@@ -1645,7 +1645,7 @@ async def cmd_admin_types(event: MessageEvent, payload: dict = None):
     for tid, name, _desc in page_types:
         kb.row()
         short_name = name[:30]
-        kb.add(Callback(short_name, payload={"cmd": "type_edit", "id": tid}))
+        kb.add(Callback(short_name, payload={"cmd": "type_edit", "id": tid, "p": page}))
 
     # Навигация
     if total_pages > 1:
