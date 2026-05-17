@@ -523,9 +523,10 @@ async def _finalize_lead(peer_id: int, user_id: int, data: dict, comment: str):
 
     conn = _connect()
     cur = conn.cursor()
+    ph = _placeholder()
     cur.execute(
-        "INSERT INTO leads (user_id, name, phone, address, comment, calc_data, status, created_at, platform) "
-        "VALUES (?, ?, ?, ?, ?, ?, 'Новая', ?, 'vk')",
+        f"INSERT INTO leads (user_id, name, phone, address, comment, calc_data, status, created_at, platform) "
+        f"VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, 'Новая', {ph}, 'vk')",
         (user_id, name, phone, address, comment, calc_data, datetime.now().isoformat()),
     )
     lead_id = cur.lastrowid
@@ -820,8 +821,9 @@ async def review_text_handler(message: Message):
     author = data.get("author", "")
     conn = _connect()
     cur = conn.cursor()
+    ph = _placeholder()
     cur.execute(
-        "INSERT INTO reviews (author, text, created_at, approved) VALUES (?, ?, ?, 1)",
+        f"INSERT INTO reviews (author, text, created_at, approved) VALUES ({ph}, {ph}, {ph}, 1)",
         (author, text, datetime.now().isoformat()),
     )
     conn.commit()
@@ -856,8 +858,9 @@ async def submit_text_handler(message: Message):
 
     conn = _connect()
     cur = conn.cursor()
+    ph = _placeholder()
     cur.execute(
-        "INSERT INTO reviews (author, text, created_at, approved, user_id) VALUES (?, ?, ?, 0, ?)",
+        f"INSERT INTO reviews (author, text, created_at, approved, user_id) VALUES ({ph}, {ph}, {ph}, 0, {ph})",
         (author, text, datetime.now().isoformat(), user_id),
     )
     review_id = cur.lastrowid
