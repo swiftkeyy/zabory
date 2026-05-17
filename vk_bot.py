@@ -441,17 +441,70 @@ async def calc_height_handler(message: Message):
         )
         return
     types_list = list(prices.keys())
+    # Сохраняем данные и показываем первый экран выбора типа
     await bot.state_dispenser.set(
         message.peer_id, CalcStates.HEIGHT, length=length, height=v, price_types=types_list
     )
+    # Показываем выбор типа с пагинацией (через callback функцию)
+    await _show_calc_type_page(message, 1)
+
+
+async def _show_calc_type_page(message_or_event, page: int):
+    """Показывает страницу выбора типа забора с пагинацией"""
+    # Получаем состояние
+    if hasattr(message_or_event, 'peer_id'):
+        peer_id = message_or_event.peer_id
+    else:
+        peer_id = message_or_event.peer_id
+    
+    state = await bot.state_dispenser.get(peer_id)
+    if not state or not state.payload:
+        return
+    
+    data = state.payload
+    types_list = data.get("price_types", [])
+    height = data.get("height", 0)
+    prices = get_prices_dict()
+    
+    # VK ограничивает 10 строк: 7 типов + навигация + отмена = 9 строк
+    types_per_page = 7
+    total = len(types_list)
+    total_pages = (total + types_per_page - 1) // types_per_page if total > 0 else 1
+    page = max(1, min(page, total_pages))
+    
+    start_idx = (page - 1) * types_per_page
+    end_idx = start_idx + types_per_page
+    page_types = types_list[start_idx:end_idx]
+    
     kb = Keyboard(inline=True)
-    for idx, t in enumerate(types_list):
-        if idx > 0:
+    for i, t in enumerate(page_types):
+        if i > 0:
             kb.row()
-        kb.add(Callback(f"{t} — {prices[t]} ₽/м²", payload={"cmd": "calc_type", "i": idx}))
+        # Индекс в общем списке
+        global_idx = start_idx + i
+        kb.add(Callback(f"{t} — {prices[t]} ₽/м²", payload={"cmd": "calc_type", "i": global_idx}))
+    
+    # Навигация
+    if total_pages > 1:
+        kb.row()
+        nav_buttons = []
+        if page > 1:
+            nav_buttons.append(Callback("◀️ Назад", payload={"cmd": "calc_type_page", "p": page - 1}))
+        if page < total_pages:
+            nav_buttons.append(Callback("Вперёд ▶️", payload={"cmd": "calc_type_page", "p": page + 1}))
+        for btn in nav_buttons:
+            kb.add(btn)
+    
     kb.row()
     kb.add(Callback("❌ Отмена", payload={"cmd": "cancel"}))
-    await message.answer(f"Высота: {v} м\n\nВыберите материал забора:", keyboard=kb.get_json())
+    
+    text = f"Высота: {height} м\n\nВыберите материал забора (стр. {page}/{total_pages}):"
+    
+    # Отправляем сообщение в зависимости от типа объекта
+    if hasattr(message_or_event, 'edit_message'):
+        await message_or_event.edit_message(text, keyboard=kb.get_json())
+    else:
+        await message_or_event.answer(text, keyboard=kb.get_json())
 
 
 # --- Заявка: имя ---
@@ -955,6 +1008,8 @@ async def handle_callback(event: MessageEvent):
         await event.edit_message(MAIN_TEXT, keyboard=main_menu_kb())
     elif cmd == "calc_start":
         await cmd_calc_start(event)
+    elif cmd == "calc_type_page":
+        await _show_calc_type_page(event, payload.get("p", 1))
     elif cmd == "calc_type":
         await cmd_calc_type(event, payload)
     elif cmd == "works":
