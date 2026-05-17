@@ -105,7 +105,8 @@ def get_fence_types():
 def get_fence_type(type_id: int):
     conn = _connect()
     cur = conn.cursor()
-    cur.execute("SELECT id, name, description FROM fence_types WHERE id = ?", (type_id,))
+    ph = _placeholder()
+    cur.execute(f"SELECT id, name, description FROM fence_types WHERE id = {ph}", (type_id,))
     row = cur.fetchone()
     conn.close()
     return row
@@ -147,7 +148,8 @@ def get_pending_reviews():
 def approve_review(review_id: int):
     conn = _connect()
     cur = conn.cursor()
-    cur.execute("UPDATE reviews SET approved = 1 WHERE id = ?", (review_id,))
+    ph = _placeholder()
+    cur.execute(f"UPDATE reviews SET approved = 1 WHERE id = {ph}", (review_id,))
     conn.commit()
     conn.close()
 
@@ -155,7 +157,8 @@ def approve_review(review_id: int):
 def reject_review(review_id: int):
     conn = _connect()
     cur = conn.cursor()
-    cur.execute("DELETE FROM reviews WHERE id = ?", (review_id,))
+    ph = _placeholder()
+    cur.execute(f"DELETE FROM reviews WHERE id = {ph}", (review_id,))
     conn.commit()
     conn.close()
 
@@ -1036,7 +1039,8 @@ async def lead_status(call: CallbackQuery):
     new_status = LEAD_STATUSES[sidx]
     conn = _connect()
     cur = conn.cursor()
-    cur.execute("UPDATE leads SET status = ? WHERE id = ?", (new_status, lid))
+    ph = _placeholder()
+    cur.execute(f"UPDATE leads SET status = {ph} WHERE id = {ph}", (new_status, lid))
     conn.commit()
     conn.close()
     await call.answer(f"Статус → {new_status}")
@@ -1283,7 +1287,8 @@ async def work_delete(call: CallbackQuery):
         return
     conn = _connect()
     cur = conn.cursor()
-    cur.execute("DELETE FROM works WHERE id = ?", (wid,))
+    ph = _placeholder()
+    cur.execute(f"DELETE FROM works WHERE id = {ph}", (wid,))
     conn.commit()
     conn.close()
     await call.answer("Удалено")
@@ -1434,8 +1439,9 @@ async def type_rename_save(message: Message, state: FSMContext):
     tid = data.get("type_id")
     conn = _connect()
     cur = conn.cursor()
+    ph = _placeholder()
     try:
-        cur.execute("UPDATE fence_types SET name = ? WHERE id = ?", (name, tid))
+        cur.execute(f"UPDATE fence_types SET name = {ph} WHERE id = {ph}", (name, tid))
         conn.commit()
         await message.answer("✅ Название обновлено.", reply_markup=admin_back_kb())
     except sqlite3.IntegrityError:
@@ -1473,7 +1479,8 @@ async def type_redesc_save(message: Message, state: FSMContext):
     tid = data.get("type_id")
     conn = _connect()
     cur = conn.cursor()
-    cur.execute("UPDATE fence_types SET description = ? WHERE id = ?", (desc, tid))
+    ph = _placeholder()
+    cur.execute(f"UPDATE fence_types SET description = {ph} WHERE id = {ph}", (desc, tid))
     conn.commit()
     conn.close()
     await message.answer("✅ Описание обновлено.", reply_markup=admin_back_kb())
@@ -1492,7 +1499,8 @@ async def type_del(call: CallbackQuery, state: FSMContext):
         return
     conn = _connect()
     cur = conn.cursor()
-    cur.execute("DELETE FROM fence_types WHERE id = ?", (tid,))
+    ph = _placeholder()
+    cur.execute(f"DELETE FROM fence_types WHERE id = {ph}", (tid,))
     conn.commit()
     conn.close()
     await call.answer("Удалено")
@@ -1586,7 +1594,8 @@ async def review_delete(call: CallbackQuery, state: FSMContext):
         return
     conn = _connect()
     cur = conn.cursor()
-    cur.execute("DELETE FROM reviews WHERE id = ?", (rid,))
+    ph = _placeholder()
+    cur.execute(f"DELETE FROM reviews WHERE id = {ph}", (rid,))
     conn.commit()
     conn.close()
     await call.answer("Удалено")
@@ -1686,14 +1695,15 @@ async def review_approve_handler(call: CallbackQuery):
         return
     conn = _connect()
     cur = conn.cursor()
-    cur.execute("SELECT author, user_id FROM reviews WHERE id = ? AND approved = 0", (rid,))
+    ph = _placeholder()
+    cur.execute(f"SELECT author, user_id FROM reviews WHERE id = {ph} AND approved = 0", (rid,))
     row = cur.fetchone()
     if not row:
         conn.close()
         await call.answer("Отзыв уже одобрен или не найден", show_alert=True)
         return
     author, user_id = row
-    cur.execute("UPDATE reviews SET approved = 1 WHERE id = ?", (rid,))
+    cur.execute(f"UPDATE reviews SET approved = 1 WHERE id = {ph}", (rid,))
     conn.commit()
     conn.close()
     await call.answer(f"Отзыв #{rid} одобрен!")
@@ -1732,14 +1742,15 @@ async def review_reject_handler(call: CallbackQuery):
         return
     conn = _connect()
     cur = conn.cursor()
-    cur.execute("SELECT author, user_id FROM reviews WHERE id = ? AND approved = 0", (rid,))
+    ph = _placeholder()
+    cur.execute(f"SELECT author, user_id FROM reviews WHERE id = {ph} AND approved = 0", (rid,))
     row = cur.fetchone()
     if not row:
         conn.close()
         await call.answer("Отзыв уже обработан или не найден", show_alert=True)
         return
     author, user_id = row
-    cur.execute("DELETE FROM reviews WHERE id = ?", (rid,))
+    cur.execute(f"DELETE FROM reviews WHERE id = {ph}", (rid,))
     conn.commit()
     conn.close()
     await call.answer(f"Отзыв #{rid} отклонён")
@@ -1827,7 +1838,8 @@ async def save_new_price(message: Message, state: FSMContext):
 
     conn = _connect()
     cur = conn.cursor()
-    cur.execute("UPDATE prices SET price_per_m2 = ? WHERE fence_type = ?", (new_price, fence_type))
+    ph = _placeholder()
+    cur.execute(f"UPDATE prices SET price_per_m2 = {ph} WHERE fence_type = {ph}", (new_price, fence_type))
     conn.commit()
     conn.close()
 
