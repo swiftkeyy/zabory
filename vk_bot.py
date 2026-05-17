@@ -466,8 +466,8 @@ async def _show_calc_type_page(message_or_event, page: int):
     height = data.get("height", 0)
     prices = get_prices_dict()
     
-    # VK ограничивает 10 строк: 5 типов + навигация + отмена = 7 строк (безопасно)
-    types_per_page = 5
+    # VK ограничивает 10 строк: 3 типа + навигация + отмена = 5 строк (безопасно)
+    types_per_page = 3
     total = len(types_list)
     total_pages = (total + types_per_page - 1) // types_per_page if total > 0 else 1
     page = max(1, min(page, total_pages))
@@ -1235,8 +1235,8 @@ async def cmd_types(event: MessageEvent, payload: dict = None):
         return
 
     # VK ограничивает максимум 10 строк
-    # 5 типов + навигация (1 строка) + главное меню (1 строка) = 7 строк (безопасно)
-    types_per_page = 5
+    # 3 типа + навигация (1 строка) + главное меню (1 строка) = 5 строк (безопасно)
+    types_per_page = 3
     total = len(types)
     total_pages = (total + types_per_page - 1) // types_per_page
     page = min(page, total_pages)
@@ -1974,8 +1974,8 @@ async def cmd_admin_prices(event: MessageEvent, payload: dict = None):
     prices = get_prices_dict()
     types_list = list(prices.keys())
     
-    # VK ограничивает 10 строк: 5 цен + навигация + админка = 7 строк (безопасно)
-    prices_per_page = 5
+    # VK ограничивает 10 строк: 3 цены + навигация + админка = 5 строк (безопасно)
+    prices_per_page = 3
     total = len(types_list)
     total_pages = (total + prices_per_page - 1) // prices_per_page if total > 0 else 1
     page = min(page, total_pages)
