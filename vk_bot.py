@@ -1136,8 +1136,9 @@ async def cmd_types(event: MessageEvent):
         return
 
     kb = Keyboard(inline=True)
-    # VK ограничивает максимум 10 строк, оставляем место для кнопки "Главное меню"
-    max_types = 9
+    # VK ограничивает максимум 10 строк
+    # 8 типов + 1 кнопка "Ещё" + 1 кнопка "Главное меню" = 10 строк
+    max_types = 8
     for i, (tid, name, _desc) in enumerate(types[:max_types]):
         if i > 0:
             kb.row()
