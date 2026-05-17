@@ -177,9 +177,10 @@ def get_leads(offset: int, limit: int):
 def get_lead(lead_id: int):
     conn = _connect()
     cur = conn.cursor()
+    ph = _placeholder()
     cur.execute(
-        "SELECT id, user_id, name, phone, address, comment, calc_data, status, created_at, platform "
-        "FROM leads WHERE id = ?",
+        f"SELECT id, user_id, name, phone, address, comment, calc_data, status, created_at, platform "
+        f"FROM leads WHERE id = {ph}",
         (lead_id,),
     )
     row = cur.fetchone()
@@ -1715,8 +1716,9 @@ async def cmd_review_detail(event: MessageEvent, payload: dict):
     rid = payload.get("id")
     conn = _connect()
     cur = conn.cursor()
+    ph = _placeholder()
     cur.execute(
-        "SELECT id, author, text, user_id, created_at, approved FROM reviews WHERE id = ?",
+        f"SELECT id, author, text, user_id, created_at, approved FROM reviews WHERE id = {ph}",
         (rid,),
     )
     row = cur.fetchone()
