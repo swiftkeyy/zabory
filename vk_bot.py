@@ -1055,17 +1055,32 @@ async def cmd_calc_start(event: MessageEvent):
 async def cmd_calc_type(event: MessageEvent, payload: dict):
     idx = payload.get("i", 0)
     state = await bot.state_dispenser.get(event.peer_id)
-    if not state:
+    
+    # Логирование для отладки
+    logger.info(f"cmd_calc_type: peer_id={event.peer_id}, idx={idx}, state={state}")
+    
+    if not state or not state.payload:
         await event.show_snackbar("Начните расчёт заново")
+        logger.warning(f"cmd_calc_type: state is empty for peer_id={event.peer_id}")
         return
+    
     data = state.payload or {}
     types_list = data.get("price_types", [])
+    
+    logger.info(f"cmd_calc_type: data={data}, types_list={types_list}")
+    
     if idx < 0 or idx >= len(types_list):
         await event.show_snackbar("Тип не найден")
         return
     fence_type = types_list[idx]
     length = data.get("length", 0)
     height = data.get("height", 0)
+    
+    if not length or not height:
+        await event.show_snackbar("Начните расчёт заново")
+        logger.warning(f"cmd_calc_type: missing length or height for peer_id={event.peer_id}")
+        return
+    
     prices = get_prices_dict()
     price_per_m2 = prices.get(fence_type, 0)
     area = length * height
