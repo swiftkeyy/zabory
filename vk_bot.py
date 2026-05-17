@@ -960,7 +960,7 @@ async def handle_callback(event: MessageEvent):
     elif cmd == "works":
         await cmd_works(event, payload)
     elif cmd == "types":
-        await cmd_types(event)
+        await cmd_types(event, payload)
     elif cmd == "ftype":
         await cmd_ftype(event, payload)
     elif cmd == "prices":
@@ -1000,7 +1000,7 @@ async def handle_callback(event: MessageEvent):
     elif cmd == "work_skip_caption":
         await cmd_work_skip_caption(event)
     elif cmd == "admin_types":
-        await cmd_admin_types(event)
+        await cmd_admin_types(event, payload)
     elif cmd == "type_add":
         await cmd_type_add(event)
     elif cmd == "type_edit":
@@ -1012,13 +1012,13 @@ async def handle_callback(event: MessageEvent):
     elif cmd == "type_del":
         await cmd_type_del(event, payload)
     elif cmd == "admin_reviews":
-        await cmd_admin_reviews(event)
+        await cmd_admin_reviews(event, payload)
     elif cmd == "review_add":
         await cmd_review_add(event)
     elif cmd == "review_del":
         await cmd_review_del(event, payload)
     elif cmd == "admin_pending":
-        await cmd_admin_pending(event)
+        await cmd_admin_pending(event, payload)
     elif cmd == "review_detail":
         await cmd_review_detail(event, payload)
     elif cmd == "review_approve":
@@ -1026,7 +1026,7 @@ async def handle_callback(event: MessageEvent):
     elif cmd == "review_reject":
         await cmd_review_reject(event, payload)
     elif cmd == "admin_prices":
-        await cmd_admin_prices(event)
+        await cmd_admin_prices(event, payload)
     elif cmd == "price_edit":
         await cmd_price_edit(event, payload)
     elif cmd == "admin_stats":
@@ -1165,8 +1165,13 @@ async def cmd_works(event: MessageEvent, payload: dict):
 
 
 # --- Виды заборов ---
-async def cmd_types(event: MessageEvent):
+async def cmd_types(event: MessageEvent, payload: dict = None):
+    if payload is None:
+        payload = {}
+    
+    page = max(1, payload.get("p", 1))
     types = get_fence_types()
+    
     if not types:
         await event.edit_message(
             "🏗 ВИДЫ ЗАБОРОВ\n\nПока не добавлено ни одного типа.",
@@ -1174,25 +1179,39 @@ async def cmd_types(event: MessageEvent):
         )
         return
 
-    kb = Keyboard(inline=True)
     # VK ограничивает максимум 10 строк
-    # 7 типов + 1 кнопка "Ещё" + 1 кнопка "Главное меню" = 9 строк (безопасно)
-    max_types = 7
-    for i, (tid, name, _desc) in enumerate(types[:max_types]):
+    # 7 типов + навигация (1 строка) + главное меню (1 строка) = 9 строк
+    types_per_page = 7
+    total = len(types)
+    total_pages = (total + types_per_page - 1) // types_per_page
+    page = min(page, total_pages)
+    
+    start_idx = (page - 1) * types_per_page
+    end_idx = start_idx + types_per_page
+    page_types = types[start_idx:end_idx]
+    
+    kb = Keyboard(inline=True)
+    for i, (tid, name, _desc) in enumerate(page_types):
         if i > 0:
             kb.row()
         kb.add(Callback(name, payload={"cmd": "ftype", "id": tid}))
     
-    if len(types) > max_types:
+    # Навигация
+    if total_pages > 1:
         kb.row()
-        kb.add(Callback(f"Ещё ({len(types) - max_types})", payload={"cmd": "types_more"}))
+        nav_buttons = []
+        if page > 1:
+            nav_buttons.append(Callback("◀️ Назад", payload={"cmd": "types", "p": page - 1}))
+        if page < total_pages:
+            nav_buttons.append(Callback("Вперёд ▶️", payload={"cmd": "types", "p": page + 1}))
+        for btn in nav_buttons:
+            kb.add(btn)
     
     kb.row()
     kb.add(Callback("🏠 Главное меню", payload={"cmd": "main"}))
-    await event.edit_message(
-        "🏗 ВИДЫ ЗАБОРОВ\n\nВыберите тип, чтобы посмотреть подробности:",
-        keyboard=kb.get_json(),
-    )
+    
+    text = f"🏗 ВИДЫ ЗАБОРОВ — стр. {page}/{total_pages}\n\nВыберите тип, чтобы посмотреть подробности:"
+    await event.edit_message(text, keyboard=kb.get_json())
 
 
 async def cmd_ftype(event: MessageEvent, payload: dict):
@@ -1545,63 +1564,50 @@ async def cmd_work_skip_caption(event: MessageEvent):
 
 
 # ====================== АДМИН: ВИДЫ ЗАБОРОВ ======================
-async def cmd_admin_types(event: MessageEvent):
+async def cmd_admin_types(event: MessageEvent, payload: dict = None):
     if not is_admin(event.user_id):
         return
 
+    if payload is None:
+        payload = {}
+    
+    page = max(1, payload.get("p", 1))
     types = get_fence_types()
 
+    # VK ограничивает 10 строк: кнопка "Добавить" + 6 типов + навигация + админка = 9 строк
+    types_per_page = 6
+    total = len(types)
+    total_pages = (total + types_per_page - 1) // types_per_page if total > 0 else 1
+    page = min(page, total_pages)
+    
+    start_idx = (page - 1) * types_per_page
+    end_idx = start_idx + types_per_page
+    page_types = types[start_idx:end_idx]
+
     kb = Keyboard(inline=True)
+    kb.add(Callback("➕ Добавить тип", payload={"cmd": "type_add"}))
 
-    kb.add(
-        Callback(
-            "➕ Добавить тип",
-            payload={"cmd": "type_add"}
-        )
-    )
-
-    max_buttons = 8
-
-    for i, (tid, name, _desc) in enumerate(types[:max_buttons]):
+    for tid, name, _desc in page_types:
         kb.row()
-
-        # VK не любит длинные кнопки
         short_name = name[:30]
+        kb.add(Callback(short_name, payload={"cmd": "type_edit", "id": tid}))
 
-        kb.add(
-            Callback(
-                short_name,
-                payload={
-                    "cmd": "type_edit",
-                    "id": tid
-                }
-            )
-        )
-
-    if len(types) > max_buttons:
+    # Навигация
+    if total_pages > 1:
         kb.row()
-        kb.add(
-            Callback(
-                f"Ещё ({len(types)-max_buttons})",
-                payload={"cmd": "types_more"}
-            )
-        )
+        nav_buttons = []
+        if page > 1:
+            nav_buttons.append(Callback("◀️ Назад", payload={"cmd": "admin_types", "p": page - 1}))
+        if page < total_pages:
+            nav_buttons.append(Callback("Вперёд ▶️", payload={"cmd": "admin_types", "p": page + 1}))
+        for btn in nav_buttons:
+            kb.add(btn)
 
     kb.row()
+    kb.add(Callback("🔙 В админку", payload={"cmd": "admin_back"}))
 
-    kb.add(
-        Callback(
-            "🔙 В админку",
-            payload={"cmd": "admin_back"}
-        )
-    )
-
-    await event.edit_message(
-        f"🏗 УПРАВЛЕНИЕ ВИДАМИ ЗАБОРОВ\n\n"
-        f"Всего: {len(types)}\n"
-        f"Кликните на тип, чтобы изменить или удалить.",
-        keyboard=kb.get_json(),
-    )
+    text = f"🏗 УПРАВЛЕНИЕ ВИДАМИ ЗАБОРОВ — стр. {page}/{total_pages}\n\nВсего: {total}\nКликните на тип, чтобы изменить или удалить."
+    await event.edit_message(text, keyboard=kb.get_json())
 
 
 async def cmd_type_add(event: MessageEvent):
@@ -1615,6 +1621,7 @@ async def cmd_type_edit(event: MessageEvent, payload: dict):
     if not is_admin(event.user_id):
         return
     tid = payload.get("id")
+    page = payload.get("p", 1)
     row = get_fence_type(tid)
     if not row:
         await event.show_snackbar("Не найдено")
@@ -1626,9 +1633,9 @@ async def cmd_type_edit(event: MessageEvent, payload: dict):
         .row()
         .add(Callback("📝 Изменить описание", payload={"cmd": "type_redesc", "id": tid}))
         .row()
-        .add(Callback("🗑 Удалить", payload={"cmd": "type_del", "id": tid}))
+        .add(Callback("🗑 Удалить", payload={"cmd": "type_del", "id": tid, "p": page}))
         .row()
-        .add(Callback("🔙 К типам", payload={"cmd": "admin_types"}))
+        .add(Callback("🔙 К типам", payload={"cmd": "admin_types", "p": page}))
         .get_json()
     )
     await event.edit_message(f"🏗 {name}\n\nЧто меняем?", keyboard=kb)
@@ -1654,6 +1661,7 @@ async def cmd_type_del(event: MessageEvent, payload: dict):
     if not is_admin(event.user_id):
         return
     tid = payload.get("id")
+    page = payload.get("p", 1)
     conn = _connect()
     cur = conn.cursor()
     ph = _placeholder()
@@ -1661,31 +1669,53 @@ async def cmd_type_del(event: MessageEvent, payload: dict):
     conn.commit()
     conn.close()
     await event.show_snackbar("Удалено")
-    await cmd_admin_types(event)
+    await cmd_admin_types(event, {"p": page})
 
 
 # ====================== АДМИН: ОТЗЫВЫ ======================
-async def cmd_admin_reviews(event: MessageEvent):
+async def cmd_admin_reviews(event: MessageEvent, payload: dict = None):
     if not is_admin(event.user_id):
         return
-    rows, total = get_reviews(0, 100)
+    
+    if payload is None:
+        payload = {}
+    
+    page = max(1, payload.get("p", 1))
+    
+    # VK ограничивает 10 строк: кнопка "Добавить" + кнопка "На модерации" + 5 отзывов + навигация + админка = 9 строк
+    reviews_per_page = 5
+    offset = (page - 1) * reviews_per_page
+    rows, total = get_reviews(offset, reviews_per_page)
     pending = get_pending_reviews()
     pending_count = len(pending)
+    
+    total_pages = (total + reviews_per_page - 1) // reviews_per_page if total > 0 else 1
+    page = min(page, total_pages)
 
     kb = Keyboard(inline=True)
     kb.add(Callback("➕ Добавить отзыв", payload={"cmd": "review_add"}))
     if pending_count > 0:
         kb.row()
-        kb.add(Callback(f"🕐 На модерации ({pending_count})", payload={"cmd": "admin_pending"}))
+        kb.add(Callback(f"🕐 На модерации ({pending_count})", payload={"cmd": "admin_pending", "p": 1}))
 
-    lines = [f"⭐ УПРАВЛЕНИЕ ОТЗЫВАМИ\n\nОпубликовано: {total}\nНа модерации: {pending_count}\n"]
-    for rid, author, text in rows[:15]:
+    lines = [f"⭐ УПРАВЛЕНИЕ ОТЗЫВАМИ — стр. {page}/{total_pages}\n\nОпубликовано: {total}\nНа модерации: {pending_count}\n"]
+    for rid, author, text in rows:
         snippet = text[:40] + ("…" if len(text) > 40 else "")
         lines.append(f"#{rid} {author}: {snippet}")
         kb.row()
-        kb.add(Callback(f"🗑 Удалить #{rid}", payload={"cmd": "review_del", "id": rid}))
-    if total > 15:
-        lines.append(f"\n…и ещё {total - 15}")
+        kb.add(Callback(f"🗑 Удалить #{rid}", payload={"cmd": "review_del", "id": rid, "p": page}))
+    
+    # Навигация
+    if total_pages > 1:
+        kb.row()
+        nav_buttons = []
+        if page > 1:
+            nav_buttons.append(Callback("◀️ Назад", payload={"cmd": "admin_reviews", "p": page - 1}))
+        if page < total_pages:
+            nav_buttons.append(Callback("Вперёд ▶️", payload={"cmd": "admin_reviews", "p": page + 1}))
+        for btn in nav_buttons:
+            kb.add(btn)
+    
     kb.row()
     kb.add(Callback("🔙 В админку", payload={"cmd": "admin_back"}))
     await event.edit_message("\n".join(lines), keyboard=kb.get_json())
@@ -1704,6 +1734,7 @@ async def cmd_review_del(event: MessageEvent, payload: dict):
     if not is_admin(event.user_id):
         return
     rid = payload.get("id")
+    page = payload.get("p", 1)
     conn = _connect()
     cur = conn.cursor()
     ph = _placeholder()
@@ -1711,14 +1742,20 @@ async def cmd_review_del(event: MessageEvent, payload: dict):
     conn.commit()
     conn.close()
     await event.show_snackbar("Удалено")
-    await cmd_admin_reviews(event)
+    await cmd_admin_reviews(event, {"p": page})
 
 
 # ====================== АДМИН: МОДЕРАЦИЯ ОТЗЫВОВ ======================
-async def cmd_admin_pending(event: MessageEvent):
+async def cmd_admin_pending(event: MessageEvent, payload: dict = None):
     if not is_admin(event.user_id):
         return
+    
+    if payload is None:
+        payload = {}
+    
+    page = max(1, payload.get("p", 1))
     pending = get_pending_reviews()
+    
     if not pending:
         await event.edit_message(
             "🕐 МОДЕРАЦИЯ ОТЗЫВОВ\n\nНет отзывов, ожидающих проверки.",
@@ -1726,19 +1763,39 @@ async def cmd_admin_pending(event: MessageEvent):
         )
         return
 
-    lines = [f"🕐 ОТЗЫВЫ НА МОДЕРАЦИИ ({len(pending)})\n"]
+    # VK ограничивает 10 строк: 3 отзыва (по 2 кнопки каждый = 6 строк) + навигация + 2 кнопки назад = 9 строк
+    reviews_per_page = 3
+    total = len(pending)
+    total_pages = (total + reviews_per_page - 1) // reviews_per_page
+    page = min(page, total_pages)
+    
+    start_idx = (page - 1) * reviews_per_page
+    end_idx = start_idx + reviews_per_page
+    page_reviews = pending[start_idx:end_idx]
+
+    lines = [f"🕐 ОТЗЫВЫ НА МОДЕРАЦИИ — стр. {page}/{total_pages} (всего: {total})\n"]
     kb = Keyboard(inline=True)
-    for rid, author, text, user_id, created_at in pending[:10]:
+    for rid, author, text, user_id, created_at in page_reviews:
         snippet = text[:40] + ("…" if len(text) > 40 else "")
         date_str = created_at[:16].replace("T", " ") if created_at else ""
         lines.append(f"#{rid} {author}: {snippet}\n{date_str}")
         kb.row()
-        kb.add(Callback(f"✅ #{rid}", payload={"cmd": "review_approve", "id": rid}))
-        kb.add(Callback(f"❌ #{rid}", payload={"cmd": "review_reject", "id": rid}))
-    if len(pending) > 10:
-        lines.append(f"\n…и ещё {len(pending) - 10}")
+        kb.add(Callback(f"✅ #{rid}", payload={"cmd": "review_approve", "id": rid, "p": page}))
+        kb.add(Callback(f"❌ #{rid}", payload={"cmd": "review_reject", "id": rid, "p": page}))
+    
+    # Навигация
+    if total_pages > 1:
+        kb.row()
+        nav_buttons = []
+        if page > 1:
+            nav_buttons.append(Callback("◀️ Назад", payload={"cmd": "admin_pending", "p": page - 1}))
+        if page < total_pages:
+            nav_buttons.append(Callback("Вперёд ▶️", payload={"cmd": "admin_pending", "p": page + 1}))
+        for btn in nav_buttons:
+            kb.add(btn)
+    
     kb.row()
-    kb.add(Callback("🔙 К отзывам", payload={"cmd": "admin_reviews"}))
+    kb.add(Callback("🔙 К отзывам", payload={"cmd": "admin_reviews", "p": 1}))
     kb.row()
     kb.add(Callback("🔙 В админку", payload={"cmd": "admin_back"}))
     await event.edit_message("\n".join(lines), keyboard=kb.get_json())
@@ -1786,6 +1843,7 @@ async def cmd_review_approve(event: MessageEvent, payload: dict):
     if not is_admin(event.user_id):
         return
     rid = payload.get("id")
+    page = payload.get("p", 1)
     conn = _connect()
     cur = conn.cursor()
     ph = _placeholder()
@@ -1811,19 +1869,15 @@ async def cmd_review_approve(event: MessageEvent, payload: dict):
         except Exception as e:
             logger.warning("Failed to notify VK user %s about approved review: %s", user_id, e)
 
-    kb = (
-        Keyboard(inline=True)
-        .add(Callback("🕐 К модерации", payload={"cmd": "admin_pending"}))
-        .add(Callback("🔙 В админку", payload={"cmd": "admin_back"}))
-        .get_json()
-    )
-    await event.edit_message(f"✅ Отзыв #{rid} от {author} одобрен и опубликован.", keyboard=kb)
+    # Возвращаемся на ту же страницу модерации
+    await cmd_admin_pending(event, {"p": page})
 
 
 async def cmd_review_reject(event: MessageEvent, payload: dict):
     if not is_admin(event.user_id):
         return
     rid = payload.get("id")
+    page = payload.get("p", 1)
     conn = _connect()
     cur = conn.cursor()
     ph = _placeholder()
@@ -1849,29 +1903,53 @@ async def cmd_review_reject(event: MessageEvent, payload: dict):
         except Exception as e:
             logger.warning("Failed to notify VK user %s about rejected review: %s", user_id, e)
 
-    kb = (
-        Keyboard(inline=True)
-        .add(Callback("🕐 К модерации", payload={"cmd": "admin_pending"}))
-        .add(Callback("🔙 В админку", payload={"cmd": "admin_back"}))
-        .get_json()
-    )
-    await event.edit_message(f"❌ Отзыв #{rid} от {author} отклонён и удалён.", keyboard=kb)
+    # Возвращаемся на ту же страницу модерации
+    await cmd_admin_pending(event, {"p": page})
 
 
 # ====================== АДМИН: ЦЕНЫ ======================
-async def cmd_admin_prices(event: MessageEvent):
+async def cmd_admin_prices(event: MessageEvent, payload: dict = None):
     if not is_admin(event.user_id):
         return
+    
+    if payload is None:
+        payload = {}
+    
+    page = max(1, payload.get("p", 1))
     prices = get_prices_dict()
-    text = "💰 ТЕКУЩИЕ ЦЕНЫ (руб/м²)\n\n"
-    for t, p in prices.items():
-        text += f"- {t}: {p}\n"
-
     types_list = list(prices.keys())
+    
+    # VK ограничивает 10 строк: 7 цен + навигация + админка = 9 строк
+    prices_per_page = 7
+    total = len(types_list)
+    total_pages = (total + prices_per_page - 1) // prices_per_page if total > 0 else 1
+    page = min(page, total_pages)
+    
+    start_idx = (page - 1) * prices_per_page
+    end_idx = start_idx + prices_per_page
+    page_types = types_list[start_idx:end_idx]
+    
+    text = f"💰 ТЕКУЩИЕ ЦЕНЫ (руб/м²) — стр. {page}/{total_pages}\n\n"
+    for t in page_types:
+        text += f"- {t}: {prices[t]}\n"
+
     kb = Keyboard(inline=True)
-    for idx, t in enumerate(types_list):
+    for t in page_types:
         kb.row()
+        idx = types_list.index(t)
         kb.add(Callback(f"✏️ {t}", payload={"cmd": "price_edit", "i": idx}))
+    
+    # Навигация
+    if total_pages > 1:
+        kb.row()
+        nav_buttons = []
+        if page > 1:
+            nav_buttons.append(Callback("◀️ Назад", payload={"cmd": "admin_prices", "p": page - 1}))
+        if page < total_pages:
+            nav_buttons.append(Callback("Вперёд ▶️", payload={"cmd": "admin_prices", "p": page + 1}))
+        for btn in nav_buttons:
+            kb.add(btn)
+    
     kb.row()
     kb.add(Callback("🔙 В админку", payload={"cmd": "admin_back"}))
     await event.edit_message(text, keyboard=kb.get_json())
