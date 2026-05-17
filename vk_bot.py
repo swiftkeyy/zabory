@@ -162,10 +162,11 @@ def get_vk_works(offset: int, limit: int):
 def get_leads(offset: int, limit: int):
     conn = _connect()
     cur = conn.cursor()
+    ph = _placeholder()
     cur.execute("SELECT COUNT(*) FROM leads")
     total = cur.fetchone()[0]
     cur.execute(
-        "SELECT id, name, phone, status, created_at FROM leads ORDER BY id DESC LIMIT ? OFFSET ?",
+        f"SELECT id, name, phone, status, created_at FROM leads ORDER BY id DESC LIMIT {ph} OFFSET {ph}",
         (limit, offset),
     )
     rows = cur.fetchall()

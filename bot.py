@@ -115,18 +115,19 @@ def get_fence_type(type_id: int):
 def get_reviews(offset: int, limit: int, approved_only: bool = True):
     conn = _connect()
     cur = conn.cursor()
+    ph = _placeholder()
     if approved_only:
         cur.execute("SELECT COUNT(*) FROM reviews WHERE approved = 1")
         total = cur.fetchone()[0]
         cur.execute(
-            "SELECT id, author, text FROM reviews WHERE approved = 1 ORDER BY id DESC LIMIT ? OFFSET ?",
+            f"SELECT id, author, text FROM reviews WHERE approved = 1 ORDER BY id DESC LIMIT {ph} OFFSET {ph}",
             (limit, offset),
         )
     else:
         cur.execute("SELECT COUNT(*) FROM reviews")
         total = cur.fetchone()[0]
         cur.execute(
-            "SELECT id, author, text FROM reviews ORDER BY id DESC LIMIT ? OFFSET ?",
+            f"SELECT id, author, text FROM reviews ORDER BY id DESC LIMIT {ph} OFFSET {ph}",
             (limit, offset),
         )
     rows = cur.fetchall()
@@ -185,10 +186,11 @@ def get_works(offset: int, limit: int):
 def get_leads(offset: int, limit: int):
     conn = _connect()
     cur = conn.cursor()
+    ph = _placeholder()
     cur.execute("SELECT COUNT(*) FROM leads")
     total = cur.fetchone()[0]
     cur.execute(
-        "SELECT id, name, phone, status, created_at FROM leads ORDER BY id DESC LIMIT ? OFFSET ?",
+        f"SELECT id, name, phone, status, created_at FROM leads ORDER BY id DESC LIMIT {ph} OFFSET {ph}",
         (limit, offset),
     )
     rows = cur.fetchall()
